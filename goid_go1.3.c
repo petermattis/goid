@@ -13,21 +13,11 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-// +build go1.4
+// +build !go1.4
 
-package goid14
+#include <runtime.h>
 
-import "unsafe"
-
-var pointerSize = unsafe.Sizeof(uintptr(0))
-
-// Backdoor access to runtime·getg().
-func getg() uintptr // in goid.s
-
-func GetGoID() int64 {
-	// The goid is the 16th field in the G struct where each field is a
-	// pointer, uintptr or padded to that size. See runtime.h from the
-	// Go sources. I'm not aware of a cleaner way to determine the
-	// offset.
-	return *(*int64)(unsafe.Pointer(getg() + 16*pointerSize))
+void ·Get(int64 ret) {
+  ret = g->goid;
+  USED(&ret);
 }

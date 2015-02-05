@@ -13,13 +13,21 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-// On go 1.3 (and newer), we can import the goid14 package.
 // +build go1.4
 
 package goid
 
-import "github.com/petermattis/goid/internal/goid14"
+import "unsafe"
 
-func GoID() int64 {
-	return goid14.GetGoID()
+var pointerSize = unsafe.Sizeof(uintptr(0))
+
+// Backdoor access to runtime·getg().
+func getg() uintptr // in goid_go1.4.s
+
+func Get() int64 {
+	// The goid is the 16th field in the G struct where each field is a
+	// pointer, uintptr or padded to that size. See runtime.h from the
+	// Go sources. I'm not aware of a cleaner way to determine the
+	// offset.
+	return *(*int64)(unsafe.Pointer(getg() + 16*pointerSize))
 }
