@@ -16,7 +16,7 @@ type gobuf struct {
 	pc   uintptr
 	g    uintptr
 	ctxt uintptr
-	ret  uint64
+	ret  uintptr
 	lr   uintptr
 	bp   uintptr
 }
