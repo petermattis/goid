@@ -4,7 +4,8 @@ package goid
 
 import "unsafe"
 
-// Just enough of the structs from runtime2.go to get the offset to goid.
+// Just enough of the structs from runtime/runtime2.go to get the offset to goid.
+// See https://github.com/golang/go/blob/release-branch.go1.5/src/runtime/runtime2.go
 
 type stack struct {
 	lo uintptr
