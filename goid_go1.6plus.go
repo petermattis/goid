@@ -1,3 +1,4 @@
+// +build amd64 amd64p32 arm
 // +build go1.6
 
 package goid
@@ -5,6 +6,7 @@ package goid
 import "unsafe"
 
 // Just enough of the structs from runtime/runtime2.go to get the offset to goid.
+// See https://github.com/golang/go/blob/release-branch.go1.6/src/runtime/runtime2.go
 
 type stack struct {
 	lo uintptr
@@ -43,7 +45,7 @@ type g struct {
 }
 
 // Backdoor access to runtime·getg().
-func getg() uintptr // in goid_go1.5plus.s
+func getg() uintptr // in goid_go1.5plus{,_arm}.s
 
 func Get() int64 {
 	gg := (*g)(unsafe.Pointer(getg()))

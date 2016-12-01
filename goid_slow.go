@@ -13,15 +13,11 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-// Assembly to mimic runtime.getg.
-// This should work on arm64 as well, but it hasn't been tested.
+// +build go1.4,!go1.5,!amd64,!amd64p32,!arm,!386 go1.5,!go1.6,!amd64,!amd64p32,!arm go1.6,!amd64,!amd64p32,!arm
 
-// +build arm
-// +build go1.5
+package goid
 
-#include "textflag.h"
-
-// func getg() uintptr
-TEXT ·getg(SB),NOSPLIT,$0-8
-	MOVW g, ret+0(FP)
-	RET
+// Get returns the id of the current goroutine.
+func Get() int64 {
+	return getSlow()
+}
