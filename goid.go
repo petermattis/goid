@@ -13,15 +13,23 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-// Assembly to mimic runtime.getg.
-// This should work on arm64 as well, but it hasn't been tested.
+package goid
 
-// +build arm
-// +build go1.5
+import (
+	"bytes"
+	"runtime"
+	"strconv"
+)
 
-#include "textflag.h"
+func ExtractGID(s []byte) int64 {
+	s = s[len("goroutine "):]
+	s = s[:bytes.IndexByte(s, ' ')]
+	gid, _ := strconv.ParseInt(string(s), 10, 64)
+	return gid
+}
 
-// func getg() uintptr
-TEXT ·getg(SB),NOSPLIT,$0-8
-	MOVW g, ret+0(FP)
-	RET
+// Parse the goid from runtime.Stack() output. Slow, but it works.
+func getSlow() int64 {
+	var buf [64]byte
+	return ExtractGID(buf[:runtime.Stack(buf[:], false)])
+}

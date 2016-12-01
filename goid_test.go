@@ -17,25 +17,8 @@ package goid
 
 import (
 	"fmt"
-	"regexp"
-	"runtime"
-	"strconv"
 	"testing"
 )
-
-// Parse the goid from runtime.Stack() output. Slow, but it works.
-var goroutineRE = regexp.MustCompile(`^goroutine\s+(\d+)\s+.*`)
-
-func getSlow() int64 {
-	var buf [1024]byte
-	s := buf[0:runtime.Stack(buf[:], false)]
-	m := goroutineRE.FindSubmatch(s)
-	if m == nil {
-		return -1
-	}
-	v, _ := strconv.ParseInt(string(m[1]), 10, 64)
-	return v
-}
 
 func TestGet(t *testing.T) {
 	ch := make(chan *string, 100)
