@@ -1,4 +1,4 @@
-// Copyright 2015 Peter Mattis.
+// Copyright 2016 Peter Mattis.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,38 +13,9 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
+// +build amd64 amd64p32
+// +build go1.5
+
 package goid
 
-import (
-	"fmt"
-	"testing"
-)
-
-func TestGet(t *testing.T) {
-	ch := make(chan *string, 100)
-	for i := 0; i < cap(ch); i++ {
-		go func(i int) {
-			goid := Get()
-			expected := getSlow()
-			if goid == expected {
-				ch <- nil
-				return
-			}
-			s := fmt.Sprintf("Expected %d, but got %d", expected, goid)
-			ch <- &s
-		}(i)
-	}
-
-	for i := 0; i < cap(ch); i++ {
-		val := <-ch
-		if val != nil {
-			t.Fatal(*val)
-		}
-	}
-}
-
-func BenchmarkGet(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		Get()
-	}
-}
+func Get() int64
