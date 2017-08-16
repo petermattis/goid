@@ -20,7 +20,7 @@
 
 #include "textflag.h"
 
-// func getg() uintptr
+// func getg() *g
 TEXT ·getg(SB),NOSPLIT,$0-8
 	MOVQ (TLS), BX
 	MOVQ BX, ret+0(FP)

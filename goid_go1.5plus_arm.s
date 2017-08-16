@@ -21,7 +21,7 @@
 
 #include "textflag.h"
 
-// func getg() uintptr
+// func getg() *g
 TEXT ·getg(SB),NOSPLIT,$0-8
 	MOVW g, ret+0(FP)
 	RET

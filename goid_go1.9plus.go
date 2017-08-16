@@ -3,8 +3,6 @@
 
 package goid
 
-import "unsafe"
-
 type stack struct {
 	lo uintptr
 	hi uintptr
@@ -32,16 +30,15 @@ type g struct {
 	syscallsp    uintptr
 	syscallpc    uintptr
 	stktopsp     uintptr
-	param        unsafe.Pointer
+	param        uintptr
 	atomicstatus uint32
 	stackLock    uint32
 	goid         int64 // Here it is!
 }
 
 // Backdoor access to runtime·getg().
-func getg() uintptr // in goid_go1.5plus{,_arm}.s
+func getg() *g // in goid_go1.5plus{,_arm}.s
 
 func Get() int64 {
-	gg := (*g)(unsafe.Pointer(getg()))
-	return gg.goid
+	return getg().goid
 }

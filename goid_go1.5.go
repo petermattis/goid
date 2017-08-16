@@ -18,8 +18,6 @@
 
 package goid
 
-import "unsafe"
-
 // Just enough of the structs from runtime/runtime2.go to get the offset to goid.
 // See https://github.com/golang/go/blob/release-branch.go1.5/src/runtime/runtime2.go
 
@@ -52,16 +50,15 @@ type g struct {
 	syscallpc    uintptr
 	stkbar       []uintptr
 	stkbarPos    uintptr
-	param        unsafe.Pointer
+	param        uintptr
 	atomicstatus uint32
 	stackLock    uint32
 	goid         int64 // Here it is!
 }
 
 // Backdoor access to runtime·getg().
-func getg() uintptr // in goid_go1.5plus.s
+func getg() *g // in goid_go1.5plus.s
 
 func Get() int64 {
-	gg := (*g)(unsafe.Pointer(getg()))
-	return gg.goid
+	return getg().goid
 }
