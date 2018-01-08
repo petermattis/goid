@@ -1,4 +1,4 @@
-// Copyright 2016 Peter Mattis.
+// Copyright 2018 Peter Mattis.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,15 +13,13 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-// Assembly to mimic runtime.getg.
-// This should work on arm64 as well, but it hasn't been tested.
+// +build gccgo
 
-// +build arm
-// +build !gccgo,go1.5
+package goid
 
-#include "textflag.h"
+//extern runtime.getg
+func getg() *g
 
-// func getg() *g
-TEXT ·getg(SB),NOSPLIT,$0-8
-	MOVW g, ret+0(FP)
-	RET
+func Get() int64 {
+	return getg().goid
+}
