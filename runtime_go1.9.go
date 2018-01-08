@@ -1,4 +1,4 @@
-// +build go1.9
+// +build !gccgo,go1.9
 
 package goid
 
