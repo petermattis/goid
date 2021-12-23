@@ -1,4 +1,4 @@
-// Copyright 2016 Peter Mattis.
+// Copyright 2021 Peter Mattis.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,12 +13,16 @@
 // permissions and limitations under the License. See the AUTHORS file
 // for names of contributors.
 
-//go:build (go1.4 && !go1.5 && !amd64 && !amd64p32 && !arm && !386) || (go1.5 && !amd64 && !amd64p32 && !arm && !arm64)
-// +build go1.4,!go1.5,!amd64,!amd64p32,!arm,!386 go1.5,!amd64,!amd64p32,!arm,!arm64
+// Assembly to mimic runtime.getg.
 
-package goid
+//go:build arm64 && gc && go1.5
+// +build arm64
+// +build gc
+// +build go1.5
 
-// Get returns the id of the current goroutine.
-func Get() int64 {
-	return getSlow()
-}
+#include "textflag.h"
+
+// func getg() *g
+TEXT ·getg(SB),NOSPLIT,$0-8
+	MOVD g, ret+0(FP)
+	RET
