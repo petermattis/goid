@@ -1,0 +1,41 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go:
+          - '1.9'
+          - '1.10'
+          - '1.11'
+          - '1.12'
+          - '1.13'
+          - '1.14'
+          - '1.15'
+          - '1.16'
+          - '1.17'
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '${{ matrix.go }}'
+      - name: 'Build with ${{ matrix.go }}'
+        run: go build -v ./...
+      - name: 'Test with ${{ matrix.go }}'
+        run: go test -v ./...
+      - name: 'TestRace with ${{ matrix.go }}'
+        run: go test -race -v ./...
+      - name: 'Bench with ${{ matrix.go }}'
+        run: go test -bench=. -benchmem -v ./...
+      - name: 'BenchRace with ${{ matrix.go }}'
+        run: go test -bench=. -benchmem -race -v ./...
