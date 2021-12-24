@@ -13,9 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        arch:
+          - armv6
+          - armv7
+          - aarch64
+          - x64
         go:
-          - '1.3'
-          - '1.4'
           - '1.5'
           - '1.6'
           - '1.7'
@@ -29,19 +32,60 @@ jobs:
           - '1.15'
           - '1.16'
           - '1.17'
+        race_build:
+          - true
+        include:
+          - go: '1.3'
+            arch: x64
+            race_build: false
+          - go: '1.4'
+            arch: x64
+            race_build: false
     steps:
       - uses: actions/checkout@v2
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ matrix.go }}'
+          go-version: ${{ matrix.go }}
       - name: 'Build with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' }}
         run: go build -v ./...
       - name: 'Test with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' }}
         run: go test -v ./...
       - name: 'TestRace with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' && matrix.race_build }}
         run: go test -race -v ./...
       - name: 'Bench with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' }}
         run: go test -bench=. -benchmem -v ./...
       - name: 'BenchRace with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' && matrix.race_build }}
         run: go test -bench=. -benchmem -race -v ./...
+      - name: 'BuildTest with ${{ matrix.go }} for armv6'
+        if: ${{ matrix.arch == 'armv6' }}
+        env:
+          GOARCH: arm
+          GOARM: 6
+        run: go test -c ./...
+      - name: 'BuildTest with ${{ matrix.go }} for armv7'
+        if: ${{ matrix.arch == 'armv7' }}
+        env:
+          GOARCH: arm
+          GOARM: 7
+        run: go test -c ./...
+      - name: 'BuildTest with ${{ matrix.go }} for aarch64'
+        if: ${{ matrix.arch == 'aarch64' }}
+        env:
+          GOARCH: arm64
+        run: go test -c ./...
+      - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
+        if: ${{ matrix.arch != 'x64' }}
+        uses: uraimo/run-on-arch-action@v2.1.1
+        with:
+          arch: ${{ matrix.arch }}
+          distro: bullseye
+          dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
+          run: |
+            find /checkout -name '*.test' -type f -executable -exec '{}' -test.v \;
+            find /checkout -name '*.test' -type f -executable -exec '{}' -test.bench=. -test.benchmem -test.v \;
