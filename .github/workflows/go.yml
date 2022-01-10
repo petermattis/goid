@@ -12,6 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch:
           - armv6
@@ -32,13 +33,20 @@ jobs:
           - '1.15'
           - '1.16'
           - '1.17'
+        # Race detector binaries crash with:
+        #
+        # FATAL: ThreadSanitizer: unsupported VMA range
+        #
+        # See https://github.com/golang/go/issues/29948.
+        arm64_unsupported_vma_range:
+          - true
         include:
           # Race builds are pretty much busted on Go 1.4 and below on systems
-          # with newer C compilers. A number of fixes was backported to
+          # with newer C compilers. A number of fixes were backported to
           # go1.4-bootstrap but not any released version. See
           # https://github.com/golang/go/compare/go1.4.3...release-branch.go1.4.
           #
-          # Cross-compilation became possible in go1.15 with the removal of C
+          # Cross-compilation became possible in go1.5 with the removal of C
           # code from the compiler. See https://go.dev/doc/go1.5#c.
           - arch: x64
             go: '1.3'
@@ -85,6 +93,29 @@ jobs:
           - arch: aarch64
             go: '1.8'
             qemu_emulation_broken: true
+          # Race detector support on linux/arm64 was added in go1.12. See
+          # https://go.dev/doc/go1.12.
+          - arch: aarch64
+            go: '1.5'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.6'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.7'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.8'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.9'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.10'
+            arm64_race_unsupported: true
+          - arch: aarch64
+            go: '1.11'
+            arm64_race_unsupported: true
     steps:
       - uses: actions/checkout@v2
       - name: Set up Go
@@ -126,6 +157,21 @@ jobs:
         env:
           GOARCH: arm64
         run: go test -c ./...
+      - name: 'BuildTestRace with ${{ matrix.go }} for aarch64'
+        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported }}
+        env:
+          GOARCH: arm64
+          CGO_ENABLED: 1
+        run: |
+          # Non-host *.syso files are missing from the Go toolchains provided
+          # by setup-go. See https://github.com/actions/setup-go/issues/181.
+          curl --location --output ${{ env.GOROOT }}/src/runtime/race/race_linux_arm64.syso \
+            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_arm64.syso && \
+          sudo apt install gcc-aarch64-linux-gnu && \
+          CC=aarch64-linux-gnu-gcc CC_FOR_TARGET=gcc-aarch64-linux-gnu go test -c -race -o goid.race.test ./...
+      - name: 'DeleteTestRace with $$ {{ matrix.go}} for aarch64'
+        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range }}
+        run: rm goid.race.test
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
         if: ${{ matrix.arch != 'x64' && !matrix.qemu_emulation_broken }}
         uses: uraimo/run-on-arch-action@v2.1.1
