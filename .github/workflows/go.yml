@@ -19,6 +19,10 @@ jobs:
           - aarch64
           - x64
         go:
+          - '1.5'
+          - '1.6'
+          - '1.7'
+          - '1.8'
           - '1.9'
           - '1.10'
           - '1.11'
@@ -28,27 +32,59 @@ jobs:
           - '1.15'
           - '1.16'
           - '1.17'
-        race_build:
-          - true
         include:
-          - go: '1.3'
-            arch: x64
-            race_build: false
-          - go: '1.4'
-            arch: x64
-            race_build: false
-          - go: '1.5'
-            arch: x64
-            race_build: true
-          - go: '1.6'
-            arch: x64
-            race_build: true
-          - go: '1.7'
-            arch: x64
-            race_build: true
-          - go: '1.8'
-            arch: x64
-            race_build: true
+          # Race builds are pretty much busted on Go 1.4 and below on systems
+          # with newer C compilers. A number of fixes was backported to
+          # go1.4-bootstrap but not any released version. See
+          # https://github.com/golang/go/compare/go1.4.3...release-branch.go1.4.
+          #
+          # Cross-compilation became possible in go1.15 with the removal of C
+          # code from the compiler. See https://go.dev/doc/go1.5#c.
+          - arch: x64
+            go: '1.3'
+            x64_race_broken: true
+          - arch: x64
+            go: '1.4'
+            x64_race_broken: true
+          # Go binaries built with Go 1.8 and below are incompatible with QEMU
+          # user-level emulation. See
+          # https://github.com/golang/go/commit/2673f9e.
+          - arch: armv6
+            go: '1.5'
+            qemu_emulation_broken: true
+          - arch: armv6
+            go: '1.6'
+            qemu_emulation_broken: true
+          - arch: armv6
+            go: '1.7'
+            qemu_emulation_broken: true
+          - arch: armv6
+            go: '1.8'
+            qemu_emulation_broken: true
+          - arch: armv7
+            go: '1.5'
+            qemu_emulation_broken: true
+          - arch: armv7
+            go: '1.6'
+            qemu_emulation_broken: true
+          - arch: armv7
+            go: '1.7'
+            qemu_emulation_broken: true
+          - arch: armv7
+            go: '1.8'
+            qemu_emulation_broken: true
+          - arch: aarch64
+            go: '1.5'
+            qemu_emulation_broken: true
+          - arch: aarch64
+            go: '1.6'
+            qemu_emulation_broken: true
+          - arch: aarch64
+            go: '1.7'
+            qemu_emulation_broken: true
+          - arch: aarch64
+            go: '1.8'
+            qemu_emulation_broken: true
     steps:
       - uses: actions/checkout@v2
       - name: Set up Go
@@ -58,17 +94,20 @@ jobs:
       - name: 'Build with ${{ matrix.go }}'
         if: ${{ matrix.arch == 'x64' }}
         run: go build -v ./...
+      - name: 'BuildRace with ${{ matrix.go }}'
+        if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
+        run: go build -race -v ./...
       - name: 'Test with ${{ matrix.go }}'
         if: ${{ matrix.arch == 'x64' }}
         run: go test -v ./...
       - name: 'TestRace with ${{ matrix.go }}'
-        if: ${{ matrix.arch == 'x64' && matrix.race_build }}
+        if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
         run: go test -race -v ./...
       - name: 'Bench with ${{ matrix.go }}'
         if: ${{ matrix.arch == 'x64' }}
         run: go test -bench=. -benchmem -v ./...
       - name: 'BenchRace with ${{ matrix.go }}'
-        if: ${{ matrix.arch == 'x64' && matrix.race_build }}
+        if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
         run: go test -bench=. -benchmem -race -v ./...
       - name: 'BuildTest with ${{ matrix.go }} for armv6'
         if: ${{ matrix.arch == 'armv6' }}
@@ -88,7 +127,7 @@ jobs:
           GOARCH: arm64
         run: go test -c ./...
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
-        if: ${{ matrix.arch != 'x64' }}
+        if: ${{ matrix.arch != 'x64' && !matrix.qemu_emulation_broken }}
         uses: uraimo/run-on-arch-action@v2.1.1
         with:
           arch: ${{ matrix.arch }}
