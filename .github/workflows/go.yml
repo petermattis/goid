@@ -117,7 +117,7 @@ jobs:
             go: '1.11'
             arm64_race_unsupported: true
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
