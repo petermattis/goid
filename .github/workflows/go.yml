@@ -174,7 +174,7 @@ jobs:
         run: rm goid.race.test
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
         if: ${{ matrix.arch != 'x64' && !matrix.qemu_emulation_broken }}
-        uses: uraimo/run-on-arch-action@v2.1.1
+        uses: uraimo/run-on-arch-action@v2.1.2
         with:
           arch: ${{ matrix.arch }}
           distro: bullseye
