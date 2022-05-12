@@ -165,7 +165,7 @@ jobs:
         run: |
           # Non-host *.syso files are missing from the Go toolchains provided
           # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output ${{ env.GOROOT }}/src/runtime/race/race_linux_arm64.syso \
+          curl --location --output $(go env GOROOT)/src/runtime/race/race_linux_arm64.syso \
             https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_arm64.syso && \
           sudo apt update && \
           sudo apt install gcc-aarch64-linux-gnu && \
