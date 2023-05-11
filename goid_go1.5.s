@@ -1,4 +1,4 @@
-// Copyright 2016 Peter Mattis.
+// Copyright 2021 Peter Mattis.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,17 +15,31 @@
 
 // Assembly to mimic runtime.getg.
 
-//go:build (amd64 || amd64p32) && gc && go1.5
-// +build amd64 amd64p32
+//go:build (386 || amd64 || amd64p32 || arm || arm64) && gc && go1.5
+// +build 386 amd64 amd64p32 arm arm64
 // +build gc
 // +build go1.5
 
-#include "go_asm.h"
+#ifdef GOARCH_amd64
+#define MOV MOVQ
+#endif
+
+#ifdef GOARCH_arm
+#define MOV MOVW
+#endif
+
+#ifdef GOARCH_arm64
+#define MOV MOVD
+#endif
+
 #include "textflag.h"
 
-// func Get() int64
-TEXT ·Get(SB),NOSPLIT,$0-8
-	MOVQ (TLS), R14
-	MOVQ g_goid(R14), R13
-	MOVQ R13, ret+0(FP)
+// func getg() *g
+TEXT ·getg(SB),NOSPLIT,$0-8
+#ifdef GOARCH_386
+	MOVL (TLS), AX
+	MOVL AX, ret+0(FP)
+#else
+	MOV g, ret+0(FP)
+#endif
 	RET
