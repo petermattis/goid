@@ -142,7 +142,7 @@ jobs:
             go: '1.11'
             arm64_race_unsupported: true
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Go
         if: ${{ !startsWith(matrix.go, 'gccgo-') }}
         uses: actions/setup-go@v4.1.0
