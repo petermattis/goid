@@ -37,6 +37,7 @@ jobs:
           - '1.18'
           - '1.19'
           - '1.20'
+          - '1.21'
         # Race detector binaries crash with:
         #
         # FATAL: ThreadSanitizer: unsupported VMA range
