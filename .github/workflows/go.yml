@@ -263,6 +263,9 @@ jobs:
           arch: ${{ matrix.arch }}
           distro: bookworm
           dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
+          shell: /bin/bash
           run: |
+            set -euxo pipefail
+
             find /checkout -name '*.test' -type f -executable -print0 | \
               xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
