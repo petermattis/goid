@@ -99,51 +99,6 @@ jobs:
           # TODO(https://github.com/actions/runner-images/issues/9848): Add gccgo-13 and gccgo-14
           # when Ubuntu 24.04 is GA on GitHub Actions.
 
-          # Go binaries built with Go 1.8 and below are incompatible with QEMU
-          # user-level emulation. See
-          # https://github.com/golang/go/commit/2673f9e.
-          - arch: armv6
-            go: '1.5'
-            qemu_emulation_broken: true
-          - arch: armv6
-            go: '1.6'
-            qemu_emulation_broken: true
-          - arch: armv6
-            go: '1.7'
-            qemu_emulation_broken: true
-          - arch: armv6
-            go: '1.8'
-            qemu_emulation_broken: true
-          - arch: armv7
-            go: '1.5'
-            qemu_emulation_broken: true
-          - arch: armv7
-            go: '1.6'
-            qemu_emulation_broken: true
-          - arch: armv7
-            go: '1.7'
-            qemu_emulation_broken: true
-          - arch: armv7
-            go: '1.8'
-            qemu_emulation_broken: true
-          - arch: aarch64
-            go: '1.5'
-            qemu_emulation_broken: true
-          - arch: aarch64
-            go: '1.6'
-            qemu_emulation_broken: true
-          - arch: aarch64
-            go: '1.7'
-            qemu_emulation_broken: true
-          - arch: aarch64
-            go: '1.8'
-            qemu_emulation_broken: true
-          - arch: s390x
-            go: '1.7'
-            qemu_emulation_broken: true
-          - arch: s390x
-            go: '1.8'
-            qemu_emulation_broken: true
           # Race detector support on linux/arm64 was added in go1.12. See
           # https://go.dev/doc/go1.12.
           - arch: aarch64
@@ -223,7 +178,8 @@ jobs:
           echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
 
           go version
-      - name: 'Set environment'
+      - name: Configure environment
+        id: configure_environment
         shell: bash
         run: |
           set -euxo pipefail
@@ -254,16 +210,28 @@ jobs:
               exit 1
               ;;
           esac
+
+          version_ge() {
+            version=$1
+
+            printf "$version\n%s\n" ${{ matrix.go }} | sort -V | head -n1 | xargs test "$version" =
+          }
+
+          # Go binaries built with Go 1.8 and below are incompatible with QEMU user-level emulation.
+          # See https://github.com/golang/go/commit/2673f9e.
+          echo "QEMU_EMULATION_WORKS=$(version_ge 1.9)"
+
+          # Better inlining in Go 1.12. See https://go.dev/doc/go1.12#compiler.
+          echo "BETTER_INLINING_AVAILABLE=$(version_ge 1.12)"
+
       - run: go build -v ./...
       - name: 'Check that Get is inlined'
-        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
+        if: steps.configure_environment.outputs.BETTER_INLINING_AVAILABLE
         shell: bash
         run: |
           set -euxo pipefail
 
-          if echo -e '${{ matrix.go }}\n1.12' | sort -V | head -n1 | xargs test 1.12 = ; then
-            go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
-          fi
+          go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
       - run: go build -race -v ./...
         if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
       - run: go test -v ./...
@@ -297,7 +265,7 @@ jobs:
         if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range || matrix.arch == 's390x' && !matrix.s390x_race_unsupported && matrix.s390x_thread_sanitizer_failed_to_allocate }}
         run: rm goid.race.test
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
-        if: ${{ matrix.arch != '386' && matrix.arch != 'x64' && !matrix.qemu_emulation_broken }}
+        if: ${{ matrix.arch != '386' && matrix.arch != 'x64' && steps.configure_environment.outputs.QEMU_EMULATION_WORKS }}
         uses: uraimo/run-on-arch-action@v2
         with:
           arch: ${{ matrix.arch }}
