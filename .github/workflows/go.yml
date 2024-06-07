@@ -20,6 +20,7 @@ jobs:
           - armv6
           - armv7
           - aarch64
+          - s390x
           - 386
           - x64
         go:
@@ -41,6 +42,12 @@ jobs:
           - '1.20'
           - '1.21'
           - '1.22'
+        exclude:
+          # Support for s390x was added in Go1.7. See https://go.dev/doc/go1.7#ports.
+          - arch: s390x
+            go: '1.5'
+          - arch: s390x
+            go: '1.6'
         # Race detector binaries crash with:
         #
         # FATAL: ThreadSanitizer: unsupported VMA range
@@ -124,6 +131,12 @@ jobs:
           - arch: aarch64
             go: '1.8'
             qemu_emulation_broken: true
+          - arch: s390x
+            go: '1.7'
+            qemu_emulation_broken: true
+          - arch: s390x
+            go: '1.8'
+            qemu_emulation_broken: true
           # Race detector support on linux/arm64 was added in go1.12. See
           # https://go.dev/doc/go1.12.
           - arch: aarch64
@@ -181,6 +194,9 @@ jobs:
               ;;
             aarch64)
               echo GOARCH=arm64 >> "$GITHUB_ENV"
+              ;;
+            s390x)
+              echo GOARCH=s390x >> "$GITHUB_ENV"
               ;;
             386)
               echo GOARCH=386 >> "$GITHUB_ENV"
