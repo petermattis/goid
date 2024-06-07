@@ -55,6 +55,13 @@ jobs:
         # See https://github.com/golang/go/issues/29948.
         arm64_unsupported_vma_range:
           - true
+        # Race detector binaries crash with:
+        #
+        # ==17==ERROR: ThreadSanitizer failed to allocate 0x7f0000 (8323072) bytes at address 9000001a0000 (errno: 12)
+        #
+        # See https://github.com/golang/go/issues/67881.
+        s390x_thread_sanitizer_failed_to_allocate:
+          - true
         include:
           # Race builds are pretty much busted on Go 1.4 and below on systems
           # with newer C compilers. A number of fixes were backported to
@@ -160,6 +167,44 @@ jobs:
           - arch: aarch64
             go: '1.11'
             arm64_race_unsupported: true
+          # Race detector support on linux/s390x was added in go1.19. See
+          # https://go.dev/doc/go1.19.
+          - arch: s390x
+            go: '1.7'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.8'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.9'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.10'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.11'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.12'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.13'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.14'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.15'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.16'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.17'
+            s390x_race_unsupported: true
+          - arch: s390x
+            go: '1.18'
+            s390x_race_unsupported: true
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
@@ -231,10 +276,9 @@ jobs:
         if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
       - run: go test -c ./...
         if: ${{ matrix.arch != 'x64' && matrix.arch != '386'}}
-      - name: 'BuildTestRace with ${{ matrix.go }} for aarch64'
-        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported }}
+      - name: 'BuildTestRace with ${{ matrix.go }} for ${{ matrix.arch }}'
+        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported || matrix.arch == 's390x' && !matrix.s390x_race_unsupported }}
         env:
-          GOARCH: arm64
           CGO_ENABLED: 1
         shell: bash
         run: |
@@ -242,15 +286,15 @@ jobs:
 
           # Non-host *.syso files are missing from the Go toolchains provided
           # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_arm64.syso \
-            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_arm64.syso
+          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_"$GOARCH".syso \
+            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_"$GOARCH".syso
 
           sudo apt update
-          sudo apt install -y gcc-aarch64-linux-gnu
+          sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
 
-          CC=aarch64-linux-gnu-gcc CC_FOR_TARGET=gcc-aarch64-linux-gnu go test -c -race -o goid.race.test ./...
-      - name: 'DeleteTestRace with $$ {{ matrix.go}} for aarch64'
-        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range }}
+          CC=${{ matrix.arch }}-linux-gnu-gcc CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu go test -c -race -o goid.race.test ./...
+      - name: 'DeleteTestRace with $$ {{ matrix.go}} for ${{ matrix.arch }}'
+        if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range || matrix.arch == 's390x' && !matrix.s390x_race_unsupported && matrix.s390x_thread_sanitizer_failed_to_allocate }}
         run: rm goid.race.test
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
         if: ${{ matrix.arch != '386' && matrix.arch != 'x64' && !matrix.qemu_emulation_broken }}
