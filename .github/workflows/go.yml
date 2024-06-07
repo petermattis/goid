@@ -80,9 +80,11 @@ jobs:
           - arch: x64
             go: gccgo-12
             x64_race_broken: true
-          - arch: x64
-            go: gccgo-13
-            x64_race_broken: true
+          # NB: gccgo-13 and gccgo-14 are not available in the Ubuntu 22.04.
+          #
+          # TODO(https://github.com/actions/runner-images/issues/9848): Add gccgo-13 and gccgo-14
+          # when Ubuntu 24.04 is GA on GitHub Actions.
+
           # Go binaries built with Go 1.8 and below are incompatible with QEMU
           # user-level emulation. See
           # https://github.com/golang/go/commit/2673f9e.
