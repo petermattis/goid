@@ -156,10 +156,14 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: Set up gccgo
         if: ${{ startsWith(matrix.go, 'gccgo-') }}
+        shell: bash
         run: |
-          sudo apt update && \
-          sudo apt install -y ${{ matrix.go }} && \
-          echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go && \
+          set -euxo pipefail
+
+          sudo apt update
+          sudo apt install -y ${{ matrix.go }}
+          echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
+
           go version
       - name: 'Build with ${{ matrix.go }}'
         if: ${{ matrix.arch == 'x64' }}
@@ -171,7 +175,10 @@ jobs:
         run: go build -v ./...
       - name: 'Check that Get is inlined with ${{ matrix.go }}'
         if: ${{ !startsWith(matrix.go, 'gccgo-') && matrix.arch == 'x64' }}
+        shell: bash
         run: |
+          set -euxo pipefail
+
           if echo -e '${{ matrix.go }}\n1.12' | sort -V | head -n1 | xargs test 1.12 = ; then
             go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
           fi
@@ -179,7 +186,10 @@ jobs:
         if: ${{ !startsWith(matrix.go, 'gccgo-') && matrix.arch == '386' }}
         env:
           GOARCH: 386
+        shell: bash
         run: |
+          set -euxo pipefail
+
           if echo -e '${{ matrix.go }}\n1.12' | sort -V | head -n1 | xargs test 1.12 = ; then
             go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
           fi
@@ -230,13 +240,18 @@ jobs:
         env:
           GOARCH: arm64
           CGO_ENABLED: 1
+        shell: bash
         run: |
+          set -euxo pipefail
+
           # Non-host *.syso files are missing from the Go toolchains provided
           # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output $(go env GOROOT)/src/runtime/race/race_linux_arm64.syso \
-            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_arm64.syso && \
-          sudo apt update && \
-          sudo apt install gcc-aarch64-linux-gnu && \
+          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_arm64.syso \
+            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_arm64.syso
+
+          sudo apt update
+          sudo apt install -y gcc-aarch64-linux-gnu
+
           CC=aarch64-linux-gnu-gcc CC_FOR_TARGET=gcc-aarch64-linux-gnu go test -c -race -o goid.race.test ./...
       - name: 'DeleteTestRace with $$ {{ matrix.go}} for aarch64'
         if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range }}
