@@ -293,7 +293,7 @@ jobs:
           sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
 
           CC=${{ matrix.arch }}-linux-gnu-gcc CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu go test -c -race -o goid.race.test ./...
-      - name: 'DeleteTestRace with $$ {{ matrix.go}} for ${{ matrix.arch }}'
+      - name: 'DeleteTestRace with $${{ matrix.go }} for ${{ matrix.arch }}'
         if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported && matrix.arm64_unsupported_vma_range || matrix.arch == 's390x' && !matrix.s390x_race_unsupported && matrix.s390x_thread_sanitizer_failed_to_allocate }}
         run: rm goid.race.test
       - name: 'Test and Bench with ${{ matrix.go }} on ${{ matrix.arch }}'
