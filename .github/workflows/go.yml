@@ -246,7 +246,7 @@ jobs:
         uses: uraimo/run-on-arch-action@v2
         with:
           arch: ${{ matrix.arch }}
-          distro: bullseye
+          distro: bookworm
           dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
           run: |
             find /checkout -name '*.test' -type f -executable -print0 | \
