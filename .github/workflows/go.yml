@@ -165,16 +165,37 @@ jobs:
           echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
 
           go version
-      - name: 'Build with ${{ matrix.go }}'
-        if: ${{ matrix.arch == 'x64' }}
-        run: go build -v ./...
-      - name: 'Build with ${{ matrix.go }}'
-        if: ${{ matrix.arch == '386' }}
-        env:
-          GOARCH: 386
-        run: go build -v ./...
-      - name: 'Check that Get is inlined with ${{ matrix.go }}'
-        if: ${{ !startsWith(matrix.go, 'gccgo-') && matrix.arch == 'x64' }}
+      - name: 'Set environment'
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          case ${{ matrix.arch }} in
+            armv6)
+              echo GOARCH=arm >> "$GITHUB_ENV"
+              echo GOARM=6 >> "$GITHUB_ENV"
+              ;;
+            armv7)
+              echo GOARCH=arm >> "$GITHUB_ENV"
+              echo GOARM=7 >> "$GITHUB_ENV"
+              ;;
+            aarch64)
+              echo GOARCH=arm64 >> "$GITHUB_ENV"
+              ;;
+            386)
+              echo GOARCH=386 >> "$GITHUB_ENV"
+              ;;
+            x64)
+              echo GOARCH=amd64 >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown architecture: ${{ matrix.arch }}"
+              exit 1
+              ;;
+          esac
+      - run: go build -v ./...
+      - name: 'Check that Get is inlined'
+        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -182,59 +203,18 @@ jobs:
           if echo -e '${{ matrix.go }}\n1.12' | sort -V | head -n1 | xargs test 1.12 = ; then
             go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
           fi
-      - name: 'Check that Get is inlined with ${{ matrix.go }}'
-        if: ${{ !startsWith(matrix.go, 'gccgo-') && matrix.arch == '386' }}
-        env:
-          GOARCH: 386
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          if echo -e '${{ matrix.go }}\n1.12' | sort -V | head -n1 | xargs test 1.12 = ; then
-            go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
-          fi
-      - name: 'BuildRace with ${{ matrix.go }}'
+      - run: go build -race -v ./...
         if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
-        run: go build -race -v ./...
-      - name: 'Test with ${{ matrix.go }}'
-        if: ${{ matrix.arch == 'x64' }}
-        run: go test -v ./...
-      - name: 'Test with ${{ matrix.go }}'
-        if: ${{ matrix.arch == '386' }}
-        env:
-          GOARCH: 386
-        run: go test -v ./...
-      - name: 'TestRace with ${{ matrix.go }}'
+      - run: go test -v ./...
+        if: ${{ matrix.arch == 'x64' || matrix.arch == '386'}}
+      - run: go test -race -v ./...
         if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
-        run: go test -race -v ./...
-      - name: 'Bench with ${{ matrix.go }}'
-        if: ${{ matrix.arch == 'x64' }}
-        run: go test -bench=. -benchmem -v ./...
-      - name: 'Bench with ${{ matrix.go }}'
-        if: ${{ matrix.arch == '386' }}
-        env:
-          GOARCH: 386
-        run: go test -bench=. -benchmem -v ./...
-      - name: 'BenchRace with ${{ matrix.go }}'
+      - run: go test -bench=. -benchmem -v ./...
+        if: ${{ matrix.arch == 'x64' || matrix.arch == '386'}}
+      - run: go test -bench=. -benchmem -race -v ./...
         if: ${{ matrix.arch == 'x64' && !matrix.x64_race_broken }}
-        run: go test -bench=. -benchmem -race -v ./...
-      - name: 'BuildTest with ${{ matrix.go }} for armv6'
-        if: ${{ matrix.arch == 'armv6' }}
-        env:
-          GOARCH: arm
-          GOARM: 6
-        run: go test -c ./...
-      - name: 'BuildTest with ${{ matrix.go }} for armv7'
-        if: ${{ matrix.arch == 'armv7' }}
-        env:
-          GOARCH: arm
-          GOARM: 7
-        run: go test -c ./...
-      - name: 'BuildTest with ${{ matrix.go }} for aarch64'
-        if: ${{ matrix.arch == 'aarch64' }}
-        env:
-          GOARCH: arm64
-        run: go test -c ./...
+      - run: go test -c ./...
+        if: ${{ matrix.arch != 'x64' && matrix.arch != '386'}}
       - name: 'BuildTestRace with ${{ matrix.go }} for aarch64'
         if: ${{ matrix.arch == 'aarch64' && !matrix.arm64_race_unsupported }}
         env:
