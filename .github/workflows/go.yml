@@ -63,6 +63,7 @@ jobs:
           - '1.20'
           - '1.21'
           - '1.22'
+          - '1.23'
         exclude:
           # Support for s390x was added in Go1.7. See https://go.dev/doc/go1.7#ports.
           - arch: s390x
@@ -188,7 +189,9 @@ jobs:
         # Race builds aren't supported on linux/386.
         #
         # Race builds aren't supported in gccgo.
+        id: build_goid_race_test
         if: |
+          !cancelled() &&
           matrix.arch == 'x64' &&
           !startsWith(matrix.go, 'gccgo-') &&
           !steps.configure_environment.outputs.RACE_BUILDS_BROKEN
@@ -199,13 +202,13 @@ jobs:
           go build -v -race ./...
           go test -c -race -o goid.race.test ./...
       - name: go build & go test -c (race)
+        id: build_goid_race_test_cross
         if: |
+          !cancelled() &&
           matrix.arch == 'aarch64' &&
           steps.configure_environment.outputs.ARM64_RACE_SUPPORTED ||
           matrix.arch == 's390x' &&
           steps.configure_environment.outputs.S390X_RACE_SUPPORTED
-        env:
-          CGO_ENABLED: 1
         shell: bash
         run: |
           set -euxo pipefail
@@ -218,6 +221,7 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
 
+          export CGO_ENABLED=1
           export CC=${{ matrix.arch }}-linux-gnu-gcc
           export CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu
 
@@ -225,14 +229,21 @@ jobs:
           go test -c -race -o goid.race.test ./...
       - run: rm goid.race.test
         if: |
-          matrix.arch == 'aarch64' &&
-          steps.configure_environment.outputs.ARM64_RACE_SUPPORTED &&
-          steps.configure_environment.outputs.ARM64_UNSUPPORTED_VMA_RANGE ||
-          matrix.arch == 's390x' &&
-          steps.configure_environment.outputs.S390X_RACE_SUPPORTED &&
-          steps.configure_environment.outputs.S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE
+          !cancelled() &&
+          (steps.build_goid_race_test.outcome == 'success' || steps.build_goid_race_test_cross.outcome == 'success') &&
+          (
+            matrix.arch == 'aarch64' &&
+            steps.configure_environment.outputs.ARM64_RACE_SUPPORTED &&
+            steps.configure_environment.outputs.ARM64_UNSUPPORTED_VMA_RANGE
+          ) || (
+            matrix.arch == 's390x' &&
+            steps.configure_environment.outputs.S390X_RACE_SUPPORTED &&
+            steps.configure_environment.outputs.S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE
+          )
       - name: Run tests
-        if: ${{ matrix.arch == '386' || matrix.arch == 'x64' }}
+        if: |
+          !cancelled() &&
+          (matrix.arch == '386' || matrix.arch == 'x64')
         shell: bash
         run: |
           set -euxo pipefail
@@ -240,6 +251,7 @@ jobs:
               xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
       - name: Run tests
         if: |
+          !cancelled() &&
           matrix.arch != '386' &&
           matrix.arch != 'x64' &&
           steps.configure_environment.outputs.QEMU_EMULATION_WORKS
