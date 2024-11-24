@@ -155,20 +155,6 @@ jobs:
             # https://go.dev/doc/go1.19.
             echo "S390X_RACE_SUPPORTED=1" >> "$GITHUB_OUTPUT"
           fi
-
-          # Race detector binaries crash with:
-          #
-          # FATAL: ThreadSanitizer: unsupported VMA range
-          #
-          # See https://github.com/golang/go/issues/29948.
-          echo "ARM64_UNSUPPORTED_VMA_RANGE=1" >> "$GITHUB_OUTPUT"
-
-          # Race detector binaries crash with:
-          #
-          # ==17==ERROR: ThreadSanitizer failed to allocate 0x7f0000 (8323072) bytes at address 9000001a0000 (errno: 12)
-          #
-          # See https://github.com/golang/go/issues/67881.
-          echo "S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE=1" >> "$GITHUB_OUTPUT"
       - name: Check that Get is inlined
         if: |
           !startsWith(matrix.go, 'gccgo-') &&
@@ -227,19 +213,6 @@ jobs:
 
           go build -v -race ./...
           go test -c -race -o goid.race.test ./...
-      - run: rm goid.race.test
-        if: |
-          !cancelled() &&
-          (steps.build_goid_race_test.outcome == 'success' || steps.build_goid_race_test_cross.outcome == 'success') &&
-          (
-            matrix.arch == 'aarch64' &&
-            steps.configure_environment.outputs.ARM64_RACE_SUPPORTED &&
-            steps.configure_environment.outputs.ARM64_UNSUPPORTED_VMA_RANGE
-          ) || (
-            matrix.arch == 's390x' &&
-            steps.configure_environment.outputs.S390X_RACE_SUPPORTED &&
-            steps.configure_environment.outputs.S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE
-          )
       - name: Run tests
         if: |
           !cancelled() &&
