@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Go
         if: ${{ !startsWith(matrix.go, 'gccgo-') }}
-        uses: actions/setup-go@v5.1.0
+        uses: actions/setup-go@v5.2.0
         with:
           go-version: ${{ matrix.go }}
       - name: Set up gccgo
