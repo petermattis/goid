@@ -256,7 +256,7 @@ jobs:
           matrix.arch != '386' &&
           matrix.arch != 'x64' &&
           steps.configure_environment.outputs.QEMU_EMULATION_WORKS
-        uses: uraimo/run-on-arch-action@v2
+        uses: uraimo/run-on-arch-action@v3
         with:
           arch: ${{ matrix.arch }}
           distro: bookworm
