@@ -65,6 +65,7 @@ jobs:
           - '1.22'
           - '1.23'
           - '1.24'
+          - '1.25.0-rc.2'
         exclude:
           # Support for s390x was added in Go1.7. See https://go.dev/doc/go1.7#ports.
           - arch: s390x
