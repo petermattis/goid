@@ -80,6 +80,7 @@ jobs:
         uses: actions/setup-go@v5.5.0
         with:
           go-version: ${{ matrix.go }}
+          check-latest: true
       - name: Set up gccgo
         if: ${{ startsWith(matrix.go, 'gccgo-') }}
         shell: bash
