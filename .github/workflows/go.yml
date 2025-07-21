@@ -75,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
+        id: setup-go
         if: ${{ !startsWith(matrix.go, 'gccgo-') }}
         uses: actions/setup-go@v5.5.0
         with:
@@ -217,7 +218,7 @@ jobs:
           # Non-host *.syso files are missing from the Go toolchains provided
           # by setup-go. See https://github.com/actions/setup-go/issues/181.
           curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_"$GOARCH".syso \
-            https://github.com/golang/go/raw/release-branch.go${{ matrix.go }}/src/runtime/race/race_linux_"$GOARCH".syso
+            https://github.com/golang/go/raw/refs/tags/go${{ steps.setup-go.outputs.go-version }}/src/runtime/race/race_linux_"$GOARCH".syso
 
           sudo apt update
           sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
