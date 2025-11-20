@@ -78,7 +78,7 @@ jobs:
       - name: Set up Go
         id: setup-go
         if: ${{ !startsWith(matrix.go, 'gccgo-') }}
-        uses: actions/setup-go@v6.0.0
+        uses: actions/setup-go@v6.1.0
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
