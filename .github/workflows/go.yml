@@ -78,6 +78,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      # TODO(https://github.com/actions/setup-go/issues/756): Remove this step
+      # and the cache input below when upstream stops warning about missing
+      # cache paths for Go versions that predate caching.
+      - name: Configure setup-go
+        id: configure_setup_go
+        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IFS=. read -r major minor _ <<< "${{ matrix.go }}"
+          cache=true
+          if (( major == 1 && minor < 10 )); then
+            cache=false
+          fi
+          echo "cache=$cache" >> "$GITHUB_OUTPUT"
       - name: Set up Go
         id: setup-go
         if: ${{ !startsWith(matrix.go, 'gccgo-') }}
@@ -85,6 +101,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
+          cache: ${{ steps.configure_setup_go.outputs.cache }}
       - name: Set up gccgo
         if: ${{ startsWith(matrix.go, 'gccgo-') }}
         shell: bash
