@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -82,6 +83,27 @@ func TestPlanRejectsInvalidRunAttempt(t *testing.T) {
 	}
 }
 
+func TestPlanCrossCompiler(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		want    string
+	}{
+		{version: "1.11"},
+		{version: "1.12", want: "zig"},
+		{version: "gccgo-14"},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			plan, err := newPlan(test.version, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.CrossCompiler != test.want {
+				t.Errorf("got cross compiler %q, want %q", plan.CrossCompiler, test.want)
+			}
+		})
+	}
+}
+
 func TestArchitectureBoundaries(t *testing.T) {
 	tests := []struct {
 		version      string
@@ -125,6 +147,40 @@ func TestArchitectureBoundaries(t *testing.T) {
 				t.Errorf("race: got %t, want %t", got, test.race)
 			}
 		})
+	}
+}
+
+func TestGo13TestBinary(t *testing.T) {
+	checkout := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(checkout); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Error(err)
+		}
+	})
+
+	var testArguments []string
+	coordinator := coordinator{
+		version: goVersion{minor: 3},
+		execute: func(environment []string, name string, arguments ...string) error {
+			if name == "go" && len(arguments) != 0 && arguments[0] == "test" {
+				testArguments = append([]string(nil), arguments...)
+			}
+			return nil
+		},
+	}
+	failures := coordinator.runArchitecture(t.TempDir(), architectures[len(architectures)-1], nil, nil)
+	if len(failures) != 0 {
+		t.Fatalf("got %d failures, want 0", len(failures))
+	}
+	if want := []string{"test", "-c", "./..."}; !reflect.DeepEqual(testArguments, want) {
+		t.Errorf("go test arguments: got %q, want %q", testArguments, want)
 	}
 }
 

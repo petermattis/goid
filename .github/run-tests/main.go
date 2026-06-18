@@ -28,10 +28,11 @@ const (
 )
 
 type resultFile struct {
-	Schema     int                     `json:"schema"`
-	Go         string                  `json:"go"`
-	RunAttempt int                     `json:"run_attempt"`
-	Results    map[string]resultStatus `json:"results"`
+	Schema        int                     `json:"schema"`
+	Go            string                  `json:"go"`
+	RunAttempt    int                     `json:"run_attempt"`
+	CrossCompiler string                  `json:"cross_compiler,omitempty"`
+	Results       map[string]resultStatus `json:"results"`
 }
 
 type goVersion struct {
@@ -40,16 +41,15 @@ type goVersion struct {
 }
 
 type architecture struct {
-	name             string
-	goarch           string
-	goarm            string
-	minimumMinor     int
-	emulated         bool
-	image            string
-	platform         string
-	raceMinor        int
-	crossCompiler    string
-	crossCompilerPkg string
+	name         string
+	goarch       string
+	goarm        string
+	minimumMinor int
+	emulated     bool
+	image        string
+	platform     string
+	raceMinor    int
+	zigTarget    string
 }
 
 var architectures = []architecture{
@@ -79,9 +79,8 @@ var architectures = []architecture{
 		platform:     "linux/arm64",
 		// Race detector support on linux/arm64 was added in Go 1.12.
 		// See https://go.dev/doc/go1.12.
-		raceMinor:        12,
-		crossCompiler:    "aarch64-linux-gnu",
-		crossCompilerPkg: "gcc-aarch64-linux-gnu",
+		raceMinor: 12,
+		zigTarget: "aarch64-linux-gnu",
 	},
 	{
 		name:   "s390x",
@@ -94,9 +93,8 @@ var architectures = []architecture{
 		platform:     "linux/s390x",
 		// Race detector support on linux/s390x was added in Go 1.19.
 		// See https://go.dev/doc/go1.19.
-		raceMinor:        19,
-		crossCompiler:    "s390x-linux-gnu",
-		crossCompilerPkg: "gcc-s390x-linux-gnu",
+		raceMinor: 19,
+		zigTarget: "s390x-linux-gnu",
 	},
 	{
 		name:         "386",
@@ -236,6 +234,11 @@ func newPlan(label string, runAttempt int) (resultFile, error) {
 			status = statusPending
 		}
 		results.Results[architecture.name] = status
+		if status == statusPending &&
+			architecture.zigTarget != "" &&
+			architecture.supportsRace(version) {
+			results.CrossCompiler = "zig"
+		}
 	}
 	return results, nil
 }
@@ -350,13 +353,11 @@ func (coordinator coordinator) run() []error {
 func (coordinator coordinator) prepareRace() map[string][]error {
 	failures := make(map[string][]error)
 	var targets []architecture
-	var packages []string
 	for _, architecture := range architectures {
 		if architecture.applicable(coordinator.version) &&
-			architecture.crossCompiler != "" &&
+			architecture.zigTarget != "" &&
 			architecture.supportsRace(coordinator.version) {
 			targets = append(targets, architecture)
-			packages = append(packages, architecture.crossCompilerPkg)
 		}
 	}
 	if len(targets) == 0 {
@@ -364,28 +365,6 @@ func (coordinator coordinator) prepareRace() map[string][]error {
 	}
 
 	fmt.Println("::group::cross-race setup")
-	packagesReady := true
-	if err := coordinator.execute(nil, "sudo", "apt", "update"); err != nil {
-		packagesReady = false
-		for _, architecture := range targets {
-			failures[architecture.name] = append(
-				failures[architecture.name],
-				fmt.Errorf("update package index: %s", err),
-			)
-		}
-	}
-	if packagesReady {
-		arguments := append([]string{"apt", "install", "-y"}, packages...)
-		if err := coordinator.execute(nil, "sudo", arguments...); err != nil {
-			for _, architecture := range targets {
-				failures[architecture.name] = append(
-					failures[architecture.name],
-					fmt.Errorf("install cross compiler: %s", err),
-				)
-			}
-		}
-	}
-
 	version, err := resolvedGoVersion()
 	if err != nil {
 		for _, architecture := range targets {
@@ -481,13 +460,25 @@ func (coordinator coordinator) runArchitecture(
 	}
 
 	normalBinary := filepath.Join(directory, "goid.test")
+	testArguments := []string{"test", "-c", "-o", normalBinary, "./..."}
+	if !coordinator.version.gccgo && coordinator.version.minor == 3 {
+		// The -o flag was added to go test in Go 1.4. Go 1.3 writes the
+		// binary to the current directory instead.
+		checkout, err := os.Getwd()
+		if err != nil {
+			return append(failures, fmt.Errorf("get working directory: %s", err))
+		}
+		normalBinary = filepath.Join(checkout, filepath.Base(checkout)+".test")
+		testArguments = []string{"test", "-c", "./..."}
+		defer os.Remove(normalBinary)
+	}
 	normalReady := true
 	if err := coordinator.execute(environment, "go", "build", "-v", "./..."); err != nil {
 		failures = append(failures, err)
 		normalReady = false
 	}
 	if normalReady {
-		if err := coordinator.execute(environment, "go", "test", "-c", "-o", normalBinary, "./..."); err != nil {
+		if err := coordinator.execute(environment, "go", testArguments...); err != nil {
 			failures = append(failures, err)
 			normalReady = false
 		}
@@ -629,12 +620,12 @@ func targetEnvironment(architecture architecture, race bool) []string {
 	if architecture.goarm != "" {
 		environment = append(environment, "GOARM="+architecture.goarm)
 	}
-	if race && architecture.crossCompiler != "" {
+	if race && architecture.zigTarget != "" {
+		compiler := "zig cc -target " + architecture.zigTarget
 		environment = append(
 			environment,
 			"CGO_ENABLED=1",
-			"CC="+architecture.crossCompiler+"-gcc",
-			"CC_FOR_TARGET=gcc-"+architecture.crossCompiler,
+			"CC="+compiler,
 		)
 	}
 	return environment

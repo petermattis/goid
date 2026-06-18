@@ -24,6 +24,11 @@ jobs:
           go-version: '1.26'
           check-latest: true
           cache: false
+      - name: Preload Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+          use-cache: false
       - name: Test and build test runner
         shell: bash
         run: |
@@ -85,6 +90,7 @@ jobs:
         shell: bash
         run: chmod +x run-tests
       - name: Plan build
+        id: plan
         shell: bash
         run: |
           set -euxo pipefail
@@ -93,6 +99,13 @@ jobs:
             -go '${{ matrix.go }}' \
             -attempt '${{ github.run_attempt }}' \
             -output 'build-status-${{ matrix.go }}.json'
+          echo "cross_compiler=$(jq -r '.cross_compiler // empty' 'build-status-${{ matrix.go }}.json')" >> "$GITHUB_OUTPUT"
+      - name: Set up Zig
+        if: ${{ steps.plan.outputs.cross_compiler == 'zig' }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+          use-cache: false
       # TODO(https://github.com/actions/setup-go/issues/756): Remove this step
       # and the cache input below when upstream stops warning about missing
       # cache paths for Go versions that predate caching.
