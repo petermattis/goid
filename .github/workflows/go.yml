@@ -10,43 +10,43 @@ on:
   schedule:
     - cron: 00 4 * * *
 
+permissions:
+  contents: read
+
 jobs:
+  prepare:
+    name: prepare test runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+      - name: Test and build test runner
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          go test ./.github/run-tests/...
+          go build -o run-tests ./.github/run-tests
+      - uses: actions/upload-artifact@v7
+        with:
+          name: run-tests
+          path: run-tests
+          overwrite: true
+
   build:
-    name: build (${{ matrix.go }}, ${{ matrix.arch }})
+    name: build (${{ matrix.go }})
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Cross-compilation became possible in go1.5 with the removal of C
-          # code from the compiler. See https://go.dev/doc/go1.5#c.
-          #
-          # gccgo cross-compilation requires a target-specific GCC toolchain
-          # rather than GOARCH, so only native x64 builds are included here.
-          - arch: x64
-            go: '1.3'
-          - arch: x64
-            go: '1.4'
-          - arch: x64
-            go: gccgo-9
-          - arch: x64
-            go: gccgo-10
-          - arch: x64
-            go: gccgo-11
-          - arch: x64
-            go: gccgo-12
-          - arch: x64
-            go: gccgo-13
-          - arch: x64
-            go: gccgo-14
-        arch:
-          - armv6
-          - armv7
-          - aarch64
-          - s390x
-          - 386
-          - x64
         go:
+          - '1.3'
+          - '1.4'
           - '1.5'
           - '1.6'
           - '1.7'
@@ -69,15 +69,30 @@ jobs:
           - '1.24'
           - '1.25'
           - '1.26'
-        exclude:
-          # Support for s390x was added in Go1.7. See https://go.dev/doc/go1.7#ports.
-          - arch: s390x
-            go: '1.5'
-          - arch: s390x
-            go: '1.6'
+          - gccgo-9
+          - gccgo-10
+          - gccgo-11
+          - gccgo-12
+          - gccgo-13
+          - gccgo-14
 
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: run-tests
+      - name: Configure test runner
+        shell: bash
+        run: chmod +x run-tests
+      - name: Plan build
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ./run-tests plan \
+            -go '${{ matrix.go }}' \
+            -attempt '${{ github.run_attempt }}' \
+            -output 'build-status-${{ matrix.go }}.json'
       # TODO(https://github.com/actions/setup-go/issues/756): Remove this step
       # and the cache input below when upstream stops warning about missing
       # cache paths for Go versions that predate caching.
@@ -113,195 +128,227 @@ jobs:
           echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
 
           go version
-      - name: Configure environment
-        id: configure_environment
+      - name: Build and run tests
         shell: bash
         run: |
           set -euxo pipefail
 
-          case ${{ matrix.arch }} in
-            armv6)
-              echo GOARCH=arm >> "$GITHUB_ENV"
-              echo GOARM=6 >> "$GITHUB_ENV"
-              ;;
-            armv7)
-              echo GOARCH=arm >> "$GITHUB_ENV"
-              echo GOARM=7 >> "$GITHUB_ENV"
-              ;;
-            aarch64)
-              echo GOARCH=arm64 >> "$GITHUB_ENV"
-              ;;
-            s390x)
-              echo GOARCH=s390x >> "$GITHUB_ENV"
-              ;;
-            386)
-              echo GOARCH=386 >> "$GITHUB_ENV"
-              ;;
-            x64)
-              echo GOARCH=amd64 >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "Unknown architecture: ${{ matrix.arch }}"
-              exit 1
-              ;;
-          esac
-
-          version_ge() {
-            version=$1
-
-            printf "$version\n%s\n" ${{ matrix.go }} | sort -V | head -n1 | xargs test "$version" =
-          }
-
-          # Race builds are pretty much busted on Go 1.4 and below on systems with newer C
-          # compilers. A number of fixes were backported to go1.4-bootstrap but not any released
-          # version. See https://github.com/golang/go/compare/go1.4.3...release-branch.go1.4.
-          if ! version_ge 1.5; then
-            echo "RACE_BUILDS_BROKEN=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Go binaries built with Go 1.8 and below are incompatible with QEMU user-level emulation.
-          # See https://github.com/golang/go/commit/2673f9e.
-          if version_ge 1.9; then
-            echo "QEMU_EMULATION_WORKS=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          if version_ge 1.12; then
-            # Better inlining in Go 1.12. See https://go.dev/doc/go1.12#compiler.
-            echo "BETTER_INLINING_AVAILABLE=1" >> "$GITHUB_OUTPUT"
-
-            # Race detector support on linux/arm64 was added in go1.12. See
-            # https://go.dev/doc/go1.12.
-            echo "ARM64_RACE_SUPPORTED=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          if version_ge 1.19; then
-            # Race detector support on linux/s390x was added in go1.19. See
-            # https://go.dev/doc/go1.19.
-            echo "S390X_RACE_SUPPORTED=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check that Get is inlined
-        if: |
-          !startsWith(matrix.go, 'gccgo-') &&
-          steps.configure_environment.outputs.BETTER_INLINING_AVAILABLE
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
-      - name: go build & go test -c
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          go build -v ./...
-          go test -c -o goid.test ./...
-      - name: go build & go test -c (race)
-        # Race builds aren't supported on linux/386.
-        #
-        # Race builds aren't supported in gccgo.
-        id: build_goid_race_test
-        if: |
-          !cancelled() &&
-          matrix.arch == 'x64' &&
-          !startsWith(matrix.go, 'gccgo-') &&
-          !steps.configure_environment.outputs.RACE_BUILDS_BROKEN
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          go build -v -race ./...
-          go test -c -race -o goid.race.test ./...
-      - name: go build & go test -c (race)
-        id: build_goid_race_test_cross
-        if: |
-          !cancelled() &&
-          matrix.arch == 'aarch64' &&
-          steps.configure_environment.outputs.ARM64_RACE_SUPPORTED ||
-          matrix.arch == 's390x' &&
-          steps.configure_environment.outputs.S390X_RACE_SUPPORTED
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          # Non-host *.syso files are missing from the Go toolchains provided
-          # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_"$GOARCH".syso \
-            https://github.com/golang/go/raw/refs/tags/go${{ steps.setup-go.outputs.go-version }}/src/runtime/race/race_linux_"$GOARCH".syso
-
-          sudo apt update
-          sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
-
-          export CGO_ENABLED=1
-          export CC=${{ matrix.arch }}-linux-gnu-gcc
-          export CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu
-
-          go build -v -race ./...
-          go test -c -race -o goid.race.test ./...
-      - name: Run tests
-        if: |
-          !cancelled() &&
-          (matrix.arch == '386' || matrix.arch == 'x64')
-        shell: bash
-        run: |
-          set -euxo pipefail
-            find . -name '*.test' -type f -executable -print0 | \
-              xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
-      - name: Run tests
-        if: |
-          !cancelled() &&
-          matrix.arch != '386' &&
-          matrix.arch != 'x64' &&
-          steps.configure_environment.outputs.QEMU_EMULATION_WORKS
-        uses: uraimo/run-on-arch-action@v3
+          ./run-tests run \
+            -go '${{ matrix.go }}' \
+            -attempt '${{ github.run_attempt }}' \
+            -output 'build-status-${{ matrix.go }}.json'
+      - name: Upload build status
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
         with:
-          arch: ${{ matrix.arch }}
-          distro: bookworm
-          dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
-          setup: go build -o run-tests ./.github/run-tests
-          shell: /bin/bash
-          run: /checkout/run-tests /checkout/*.test
+          name: build-status-${{ matrix.go }}
+          path: build-status-${{ matrix.go }}.json
+          if-no-files-found: error
+          overwrite: true
 
   report:
     name: build status
     if: ${{ always() }}
-    needs: build
+    needs:
+      - prepare
+      - build
     permissions:
       actions: read
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-status-*
+          path: build-status
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: run-tests
+      - name: Configure test runner
+        shell: bash
+        run: chmod +x run-tests
       - uses: actions/github-script@v9
         with:
           script: |
+            const {execFileSync} = require('child_process');
+            const fs = require('fs');
+            const path = require('path');
+
+            const symbols = {
+              action_required: '⚠️',
+              cancelled: '⏹️',
+              failure: '❌',
+              in_progress: '⏳',
+              neutral: '➖',
+              pending: '⏳',
+              queued: '⏳',
+              skipped: '⏭️',
+              stale: '➖',
+              startup_failure: '❌',
+              success: '✅',
+              timed_out: '⏱️',
+              waiting: '⏳',
+            };
+            const producerStatuses = new Set([
+              'failure',
+              'not_applicable',
+              'pending',
+              'success',
+            ]);
+
+            function parseResult(file) {
+              let result;
+              try {
+                result = JSON.parse(fs.readFileSync(file, 'utf8'));
+              } catch (err) {
+                throw new Error(`Invalid build status ${file}: ${err.message}`);
+              }
+              if (result.schema !== 1) {
+                throw new Error(`Unsupported build status schema in ${file}`);
+              }
+              if (typeof result.go !== 'string' || result.go.length === 0) {
+                throw new Error(`Missing Go version in ${file}`);
+              }
+              if (!Number.isSafeInteger(result.run_attempt) || result.run_attempt <= 0) {
+                throw new Error(`Invalid run attempt in ${file}`);
+              }
+              if (!result.results || typeof result.results !== 'object' || Array.isArray(result.results)) {
+                throw new Error(`Missing architecture results in ${file}`);
+              }
+              const entries = Object.entries(result.results);
+              if (entries.length === 0) {
+                throw new Error(`Empty architecture results in ${file}`);
+              }
+              for (const [architecture, status] of entries) {
+                if (architecture.length === 0 || typeof status !== 'string' || !producerStatuses.has(status)) {
+                  throw new Error(`Invalid ${architecture || 'architecture'} result in ${file}`);
+                }
+              }
+              return result;
+            }
+
             const jobs = await github.paginate(
               github.rest.actions.listJobsForWorkflowRun,
               {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: context.runId,
-                filter: 'latest',
+                filter: 'all',
                 per_page: 100,
               },
             );
 
             const builds = new Map();
-            const architectureSet = new Set();
             for (const job of jobs) {
-              const match = /^build \(([^,]+), ([^)]+)\)$/.exec(job.name);
+              const match = /^build \(([^)]+)\)$/.exec(job.name);
               if (!match) {
                 continue;
               }
 
-              const [, version, architecture] = match;
-              if (!builds.has(version)) {
-                builds.set(version, new Map());
+              const version = match[1];
+              if (!Number.isSafeInteger(job.run_attempt) || job.run_attempt <= 0) {
+                throw new Error(`Invalid run attempt for ${version}`);
               }
-              builds.get(version).set(architecture, job);
-              architectureSet.add(architecture);
+              const previous = builds.get(version);
+              if (!previous || job.run_attempt > previous.job.run_attempt) {
+                builds.set(version, {job});
+              } else if (job.run_attempt === previous.job.run_attempt) {
+                throw new Error(
+                  `Duplicate build job for ${version} attempt ${job.run_attempt}`,
+                );
+              }
             }
             if (builds.size === 0) {
               throw new Error('No matrix build jobs found');
+            }
+
+            const artifacts = new Map();
+            const artifactEntries = fs.existsSync('build-status')
+              ? fs.readdirSync('build-status', {withFileTypes: true})
+              : [];
+            for (const entry of artifactEntries) {
+              if (!entry.isFile() || path.extname(entry.name) !== '.json') {
+                continue;
+              }
+              const file = path.join('build-status', entry.name);
+              const result = parseResult(file);
+              if (artifacts.has(result.go)) {
+                throw new Error(`Duplicate build status for ${result.go}`);
+              }
+              artifacts.set(result.go, result);
+            }
+            for (const version of artifacts.keys()) {
+              if (!builds.has(version)) {
+                throw new Error(`Build status has no matching job for ${version}`);
+              }
+            }
+
+            const architectureSet = new Set();
+            for (const [version, build] of builds) {
+              let result = artifacts.get(version);
+              if (!result || result.run_attempt !== build.job.run_attempt) {
+                if (result) {
+                  core.notice(
+                    `Ignoring build status for ${version} from attempt ${result.run_attempt}; ` +
+                    `the latest job is from attempt ${build.job.run_attempt}.`,
+                  );
+                }
+                const fallback = path.join(
+                  process.env.RUNNER_TEMP,
+                  `build-status-${version}-${build.job.run_attempt}.json`,
+                );
+                execFileSync(
+                  './run-tests',
+                  [
+                    'plan',
+                    '-go', version,
+                    '-attempt', String(build.job.run_attempt),
+                    '-output', fallback,
+                  ],
+                  {stdio: 'inherit'},
+                );
+                result = parseResult(fallback);
+              }
+              if (result.go !== version) {
+                throw new Error(`Build status version does not match job for ${version}`);
+              }
+              if (result.run_attempt !== build.job.run_attempt) {
+                throw new Error(`Build status attempt does not match job for ${version}`);
+              }
+
+              const conclusion = build.job.conclusion || build.job.status;
+              build.results = new Map();
+              const entries = Object.entries(result.results);
+              const applicable = entries.filter(([, status]) => status !== 'not_applicable');
+              if (applicable.length === 0) {
+                throw new Error(`No applicable architectures for ${version}`);
+              }
+              const overrideSuccess =
+                conclusion !== 'success' &&
+                applicable.every(([, status]) => status === 'success');
+              for (const [architecture, reportedStatus] of entries) {
+                let status = reportedStatus;
+                if (status === 'pending') {
+                  if (conclusion === 'success') {
+                    throw new Error(`Successful build for ${version} has a pending ${architecture} result`);
+                  }
+                  status = conclusion;
+                } else if (
+                  conclusion === 'success' &&
+                  status !== 'success' &&
+                  status !== 'not_applicable'
+                ) {
+                  throw new Error(`Successful build for ${version} has ${status} for ${architecture}`);
+                } else if (overrideSuccess && status === 'success') {
+                  status = conclusion;
+                }
+                if (!symbols[status] && status !== 'not_applicable') {
+                  throw new Error(`Cannot render ${status} for ${version}/${architecture}`);
+                }
+                build.results.set(architecture, status);
+                architectureSet.add(architecture);
+              }
             }
 
             const architectures = [...architectureSet].sort();
@@ -317,20 +364,6 @@ jobs:
               return bParts[0] - aParts[0] || (bParts[1] || 0) - (aParts[1] || 0);
             });
 
-            const symbols = {
-              action_required: '⚠️',
-              cancelled: '⏹️',
-              failure: '❌',
-              in_progress: '⏳',
-              neutral: '➖',
-              queued: '⏳',
-              skipped: '⏭️',
-              stale: '➖',
-              startup_failure: '❌',
-              success: '✅',
-              timed_out: '⏱️',
-              waiting: '⏳',
-            };
             const summary = [
               '## Build status',
               '',
@@ -345,20 +378,24 @@ jobs:
               const summaryCells = [];
               const readmeCells = [];
               for (const architecture of architectures) {
-                const job = builds.get(version).get(architecture);
-                if (!job) {
+                const build = builds.get(version);
+                const status = build.results.get(architecture);
+                if (status === 'not_applicable') {
                   summaryCells.push('—');
                   readmeCells.push('—');
                   continue;
                 }
+                if (!status) {
+                  throw new Error(`Missing ${architecture} result for ${version}`);
+                }
 
-                const conclusion = job.conclusion || job.status;
-                const symbol = symbols[conclusion] || '❔';
-                summaryCells.push(`[${symbol}](${job.html_url} "${conclusion}")`);
+                const symbol = symbols[status];
+                const link = `[${symbol}](${build.job.html_url} "${status}")`;
+                summaryCells.push(link);
                 readmeCells.push(
-                  conclusion === 'success'
+                  status === 'success'
                     ? symbol
-                    : `[${symbol}](${job.html_url} "${conclusion}")`,
+                    : link,
                 );
               }
               summary.push(`| ${version} | ${summaryCells.join(' | ')} |`);
