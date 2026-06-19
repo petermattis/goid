@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -101,6 +102,74 @@ func TestPlanCrossCompiler(t *testing.T) {
 				t.Errorf("got cross compiler %q, want %q", plan.CrossCompiler, test.want)
 			}
 		})
+	}
+}
+
+func TestZigCC(t *testing.T) {
+	var name string
+	var arguments []string
+	err := runZigCC(
+		func(environment []string, command string, commandArguments ...string) error {
+			name = command
+			arguments = append([]string(nil), commandArguments...)
+			return nil
+		},
+		"aarch64-linux-gnu",
+		[]string{"-o", "output", "race_linux_arm64.syso", "other.o"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "zig" {
+		t.Errorf("got command %q, want %q", name, "zig")
+	}
+	want := []string{
+		"cc",
+		"-target", "aarch64-linux-gnu",
+		"-o", "output",
+		"-Wl,race_linux_arm64.syso",
+		"other.o",
+	}
+	if !reflect.DeepEqual(arguments, want) {
+		t.Errorf("got arguments %q, want %q", arguments, want)
+	}
+}
+
+func TestRunCommandForwardsStdin(t *testing.T) {
+	const helperEnvironment = "GOID_TEST_RUN_COMMAND_STDIN"
+	if os.Getenv(helperEnvironment) == "1" {
+		input, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(input) != "input" {
+			t.Errorf("got stdin %q, want %q", input, "input")
+		}
+		return
+	}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = stdin
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := io.WriteString(writer, "input"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(helperEnvironment, "1")
+	if err := runCommand(os.Environ(), os.Args[0], "-test.run=^TestRunCommandForwardsStdin$"); err != nil {
+		t.Fatal(err)
 	}
 }
 

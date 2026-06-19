@@ -16,7 +16,10 @@ import (
 	"strings"
 )
 
-const resultSchema = 1
+const (
+	resultSchema = 1
+	zigCCPrefix  = "zig-cc-"
+)
 
 type resultStatus string
 
@@ -118,6 +121,16 @@ var (
 )
 
 func main() {
+	if target, ok := strings.CutPrefix(filepath.Base(os.Args[0]), zigCCPrefix); ok {
+		if target == "" {
+			fatal(fmt.Errorf("missing Zig target in %q", os.Args[0]))
+		}
+		if err := runZigCC(runCommand, target, os.Args[1:]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+
 	if len(os.Args) < 2 {
 		fatal(fmt.Errorf("usage: run-tests <plan|run> -go <version> -attempt <positive integer> -output <path>"))
 	}
@@ -316,7 +329,7 @@ func (coordinator coordinator) run() []error {
 	}
 	defer os.RemoveAll(workDirectory)
 
-	raceFailures := coordinator.prepareRace()
+	raceFailures := coordinator.prepareRace(workDirectory)
 	emulationFailures := coordinator.prepareEmulation()
 	var failures []error
 
@@ -350,7 +363,7 @@ func (coordinator coordinator) run() []error {
 	return failures
 }
 
-func (coordinator coordinator) prepareRace() map[string][]error {
+func (coordinator coordinator) prepareRace(workDirectory string) map[string][]error {
 	failures := make(map[string][]error)
 	var targets []architecture
 	for _, architecture := range architectures {
@@ -365,6 +378,27 @@ func (coordinator coordinator) prepareRace() map[string][]error {
 	}
 
 	fmt.Println("::group::cross-race setup")
+	// Go 1.17 and below keep only the first word of CC when invoking cgo.
+	// Give them a single executable path that main dispatches back to Zig.
+	executable, err := os.Executable()
+	if err != nil {
+		for _, architecture := range targets {
+			failures[architecture.name] = append(
+				failures[architecture.name],
+				fmt.Errorf("find test runner executable: %s", err),
+			)
+		}
+	} else {
+		for _, architecture := range targets {
+			if err := os.Symlink(executable, zigCCPath(workDirectory, architecture)); err != nil {
+				failures[architecture.name] = append(
+					failures[architecture.name],
+					fmt.Errorf("create Zig compiler trampoline: %s", err),
+				)
+			}
+		}
+	}
+
 	version, err := resolvedGoVersion()
 	if err != nil {
 		for _, architecture := range targets {
@@ -448,7 +482,7 @@ func (coordinator coordinator) runArchitecture(
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return []error{fmt.Errorf("create output directory: %s", err)}
 	}
-	environment := targetEnvironment(architecture, false)
+	environment := targetEnvironment(workDirectory, architecture, false)
 	var failures []error
 
 	if !coordinator.version.gccgo && coordinator.version.minor >= 12 {
@@ -493,7 +527,7 @@ func (coordinator coordinator) runArchitecture(
 		if len(raceFailures) != 0 {
 			failures = append(failures, raceFailures...)
 		} else {
-			raceEnvironment := targetEnvironment(architecture, true)
+			raceEnvironment := targetEnvironment(workDirectory, architecture, true)
 			raceBinary := filepath.Join(directory, "goid.race.test")
 			raceReady := true
 			if err := coordinator.execute(raceEnvironment, "go", "build", "-v", "-race", "./..."); err != nil {
@@ -600,7 +634,7 @@ func runDocker(
 	return execute(nil, "docker", arguments...)
 }
 
-func targetEnvironment(architecture architecture, race bool) []string {
+func targetEnvironment(workDirectory string, architecture architecture, race bool) []string {
 	removed := map[string]bool{
 		"CC":            true,
 		"CC_FOR_TARGET": true,
@@ -621,14 +655,30 @@ func targetEnvironment(architecture architecture, race bool) []string {
 		environment = append(environment, "GOARM="+architecture.goarm)
 	}
 	if race && architecture.zigTarget != "" {
-		compiler := "zig cc -target " + architecture.zigTarget
 		environment = append(
 			environment,
 			"CGO_ENABLED=1",
-			"CC="+compiler,
+			"CC="+zigCCPath(workDirectory, architecture),
 		)
 	}
 	return environment
+}
+
+func zigCCPath(workDirectory string, architecture architecture) string {
+	return filepath.Join(workDirectory, zigCCPrefix+architecture.zigTarget)
+}
+
+func runZigCC(execute commandRunner, target string, compilerArguments []string) error {
+	arguments := []string{"cc", "-target", target}
+	for _, argument := range compilerArguments {
+		// Unlike GCC, Zig rejects object files with the .syso extension.
+		// Pass them directly to the linker instead.
+		if filepath.Ext(argument) == ".syso" {
+			argument = "-Wl," + argument
+		}
+		arguments = append(arguments, argument)
+	}
+	return execute(nil, "zig", arguments...)
 }
 
 func resolvedGoVersion() (string, error) {
@@ -661,6 +711,7 @@ func runCommand(environment []string, name string, arguments ...string) error {
 	if environment != nil {
 		command.Env = environment
 	}
+	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
