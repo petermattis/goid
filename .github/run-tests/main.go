@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -616,14 +616,29 @@ func (coordinator coordinator) runArchitecture(
 func checkInlining(environment []string) error {
 	command := exec.Command("go", "build", "-gcflags=-m")
 	command.Env = environment
-	var output bytes.Buffer
-	command.Stdout = io.MultiWriter(os.Stdout, &output)
-	command.Stderr = io.MultiWriter(os.Stderr, &output)
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("go build -gcflags=-m: %s", err)
+	// Optimization diagnostics are expected output. Replay them only if the
+	// command or assertion fails.
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	replayOutput := func() error {
+		var failures []error
+		if _, err := os.Stdout.Write(stdout.Bytes()); err != nil {
+			failures = append(failures, fmt.Errorf("write go build stdout: %s", err))
+		}
+		if _, err := os.Stderr.Write(stderr.Bytes()); err != nil {
+			failures = append(failures, fmt.Errorf("write go build stderr: %s", err))
+		}
+		return errors.Join(failures...)
 	}
-	if !inlineGetPattern.Match(output.Bytes()) {
-		return fmt.Errorf("go build -gcflags=-m did not report that Get can be inlined")
+	if err := command.Run(); err != nil {
+		return errors.Join(fmt.Errorf("go build -gcflags=-m: %s", err), replayOutput())
+	}
+	if !inlineGetPattern.Match(stderr.Bytes()) {
+		return errors.Join(
+			fmt.Errorf("go build -gcflags=-m did not report that Get can be inlined"),
+			replayOutput(),
+		)
 	}
 	return nil
 }
