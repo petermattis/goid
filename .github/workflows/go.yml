@@ -14,173 +14,112 @@ permissions:
   contents: read
 
 jobs:
-  test_runner:
-    name: test runner
+  build:
+    name: build (${{ matrix.versions }})
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - name: Test runner
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          go test ./.github/run-tests/...
-
-  build_downloaded:
-    name: build (${{ matrix.go }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: go-01
-            go: '1.26 1.5'
-          - id: go-02
-            go: '1.25 1.6'
-          - id: go-03
-            go: '1.24 1.7'
-          - id: go-04
-            go: '1.23 1.8'
-          - id: go-05
-            go: '1.22 1.9'
-          - id: go-06
-            go: '1.21 1.10'
-          - id: go-07
-            go: '1.20 1.11'
-          - id: go-08
-            go: '1.19 1.12'
-          - id: go-09
-            go: '1.18 1.13'
-          - id: go-10
-            go: '1.17 1.14'
-          - id: go-11
-            go: '1.16 1.15'
-
+          - versions: '1.26 1.5'
+          - versions: '1.25 1.6'
+          - versions: '1.24 1.7'
+          - versions: '1.23 1.8'
+          - versions: '1.22 1.9'
+          - versions: '1.21 1.10'
+          - versions: '1.20 1.11'
+          - versions: '1.19 1.12'
+          - versions: '1.18 1.13'
+          - versions: '1.17 1.14'
+          - versions: '1.16 1.15'
+          - versions: '1.3'
+            go: '1.3'
+          - versions: '1.4'
+            go: '1.4'
+          - versions: gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14
+            gccgo: true
     steps:
       - uses: actions/checkout@v7
-      - name: Build test runner
-        shell: bash
-        run: go build -o run-tests ./.github/run-tests
-      - name: Set up Zig
+        timeout-minutes: 2
+      - run: go build -o run-tests ./.github/run-tests
+        timeout-minutes: 2
+      - if: ${{ !matrix.go && !matrix.gccgo }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        timeout-minutes: 5
         with:
           version: 0.15.2
           use-cache: false
-      - name: Download and run tests
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          ./run-tests download \
-            -bootstrap-go go \
-            -attempt '${{ github.run_attempt }}' \
-            -output build-status \
-            ${{ matrix.go }}
-      - name: Upload build status
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: build-status-${{ matrix.id }}
-          path: build-status/*.json
-          if-no-files-found: error
-          overwrite: true
-
-  build_setup_go:
-    name: build (${{ matrix.go }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        go:
-          - '1.3'
-          - '1.4'
-
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build test runner
-        shell: bash
-        run: go build -o run-tests ./.github/run-tests
       # TODO(https://github.com/actions/setup-go/issues/756): Remove the cache
       # input below when upstream stops warning about missing cache paths for
       # Go versions that predate caching.
       - name: Set up Go
+        if: ${{ matrix.go }}
+        timeout-minutes: 5
         uses: actions/setup-go@v6.4.0
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
           cache: false
-      - name: Run tests
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          ./run-tests installed \
-            -attempt '${{ github.run_attempt }}' \
-            -output build-status \
-            '${{ matrix.go }}=go'
-      - name: Upload build status
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: build-status-go-${{ matrix.go }}
-          path: build-status/*.json
-          if-no-files-found: error
-          overwrite: true
-
-  build_gccgo:
-    name: build (gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build test runner
-        shell: bash
-        run: go build -o run-tests ./.github/run-tests
       - name: Set up gccgo
+        if: ${{ matrix.gccgo }}
         timeout-minutes: 5
-        shell: bash
         run: |
           set -euxo pipefail
 
           sudo apt update
           sudo apt install -y gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14
-      - name: Run tests
-        timeout-minutes: 5
-        shell: bash
+      - name: Run downloaded tests
+        if: ${{ !matrix.go && !matrix.gccgo }}
+        timeout-minutes: 10
         run: |
           set -euxo pipefail
 
-          ./run-tests installed \
-            -attempt '${{ github.run_attempt }}' \
-            -output build-status \
+          ./run-tests run \
+            -attempt "$GITHUB_RUN_ATTEMPT" \
+            -output 'build-status-${{ strategy.job-index }}.json' \
+            -bootstrap-go "$(command -v go)" \
+            ${{ matrix.versions }}
+      - name: Run setup-go tests
+        if: ${{ matrix.go }}
+        timeout-minutes: 5
+        run: |
+          set -euxo pipefail
+
+          GOROOT="$(go env GOROOT)"
+          export GOROOT
+          ./run-tests run \
+            -attempt "$GITHUB_RUN_ATTEMPT" \
+            -output 'build-status-${{ strategy.job-index }}.json' \
+            "${{ matrix.versions }}=$(command -v go)"
+      - name: Run gccgo tests
+        if: ${{ matrix.gccgo }}
+        timeout-minutes: 5
+        run: |
+          set -euxo pipefail
+
+          ./run-tests run \
+            -attempt "$GITHUB_RUN_ATTEMPT" \
+            -output 'build-status-${{ strategy.job-index }}.json' \
             gccgo-9=/usr/bin/go-9 \
             gccgo-10=/usr/bin/go-10 \
             gccgo-11=/usr/bin/go-11 \
             gccgo-12=/usr/bin/go-12 \
             gccgo-13=/usr/bin/go-13 \
             gccgo-14=/usr/bin/go-14
-      - name: Upload build status
-        if: ${{ always() }}
+      - if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        timeout-minutes: 5
         with:
-          name: build-status-gccgo
-          path: build-status/*.json
-          if-no-files-found: error
+          name: build-status-${{ strategy.job-index }}
+          path: build-status-${{ strategy.job-index }}.json
+          if-no-files-found: ignore
           overwrite: true
 
   report:
     name: build status
     if: ${{ always() }}
-    needs:
-      - test_runner
-      - build_downloaded
-      - build_setup_go
-      - build_gccgo
+    needs: build
     permissions:
       actions: read
       contents: write
@@ -188,270 +127,141 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Build test runner
-        shell: bash
-        run: go build -o run-tests ./.github/run-tests
+      - run: go test ./.github/run-tests && go build -o run-tests ./.github/run-tests
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           pattern: build-status-*
           path: build-status
           merge-multiple: true
       - uses: actions/github-script@v9
-        env:
-          TEST_RUNNER_RESULT: ${{ needs.test_runner.result }}
         with:
           script: |
             const {execFileSync} = require('child_process');
             const fs = require('fs');
             const path = require('path');
 
-            const symbols = {
-              action_required: '⚠️',
-              cancelled: '⏹️',
-              failure: '❌',
-              in_progress: '⏳',
-              neutral: '➖',
-              pending: '⏳',
-              queued: '⏳',
-              skipped: '⏭️',
-              stale: '➖',
-              startup_failure: '❌',
-              success: '✅',
-              timed_out: '⏱️',
-              waiting: '⏳',
-            };
-            const producerStatuses = new Set([
-              'failure',
-              'not_applicable',
-              'pending',
-              'success',
-            ]);
-
-            function parseResult(file) {
-              let result;
-              try {
-                result = JSON.parse(fs.readFileSync(file, 'utf8'));
-              } catch (err) {
-                throw new Error(`Invalid build status ${file}: ${err.message}`);
+            function read(file) {
+              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+              if (!value || value.schema !== 1 || !Number.isSafeInteger(value.run_attempt) ||
+                  value.run_attempt <= 0 || !value.results ||
+                  typeof value.results !== 'object' || Array.isArray(value.results)) {
+                throw new Error(`Invalid build status ${file}`);
               }
-              if (result.schema !== 1) {
-                throw new Error(`Unsupported build status schema in ${file}`);
-              }
-              if (typeof result.go !== 'string' || result.go.length === 0) {
-                throw new Error(`Missing Go version in ${file}`);
-              }
-              if (!Number.isSafeInteger(result.run_attempt) || result.run_attempt <= 0) {
-                throw new Error(`Invalid run attempt in ${file}`);
-              }
-              if (!result.results || typeof result.results !== 'object' || Array.isArray(result.results)) {
-                throw new Error(`Missing architecture results in ${file}`);
-              }
-              const entries = Object.entries(result.results);
-              if (entries.length === 0) {
-                throw new Error(`Empty architecture results in ${file}`);
-              }
-              for (const [architecture, status] of entries) {
-                if (architecture.length === 0 || typeof status !== 'string' || !producerStatuses.has(status)) {
-                  throw new Error(`Invalid ${architecture || 'architecture'} result in ${file}`);
-                }
-              }
-              return result;
+              return value;
             }
 
-            const jobs = await github.paginate(
-              github.rest.actions.listJobsForWorkflowRun,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: context.runId,
-                filter: 'all',
-                per_page: 100,
-              },
-            );
+            const versions = [
+              ...Array.from({length: 24}, (_, index) => `1.${26 - index}`),
+              ...Array.from({length: 6}, (_, index) => `gccgo-${14 - index}`),
+            ];
+            const expectedVersions = new Set(versions);
 
-            const latestJobs = new Map();
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              filter: 'all',
+              per_page: 100,
+            });
+            const latest = new Map();
             for (const job of jobs) {
               const match = /^build \(([^)]+)\)$/.exec(job.name);
-              if (!match) {
-                continue;
-              }
-
-              const versions = match[1].trim().split(/\s+/);
-              if (
-                versions.some(version => version.length === 0) ||
-                new Set(versions).size !== versions.length
-              ) {
-                throw new Error(`Invalid version list in ${job.name}`);
-              }
-              if (!Number.isSafeInteger(job.run_attempt) || job.run_attempt <= 0) {
-                throw new Error(`Invalid run attempt for ${job.name}`);
-              }
-
-              const previous = latestJobs.get(job.name);
+              if (!match) continue;
+              const previous = latest.get(job.name);
               if (!previous || job.run_attempt > previous.job.run_attempt) {
-                latestJobs.set(job.name, {job, versions});
+                latest.set(job.name, {job, versions: match[1].split(' ')});
               } else if (job.run_attempt === previous.job.run_attempt) {
                 throw new Error(`Duplicate ${job.name} attempt ${job.run_attempt}`);
               }
             }
 
             const builds = new Map();
-            for (const shard of latestJobs.values()) {
-              const {job, versions} = shard;
-              if (job.conclusion === 'skipped') {
-                throw new Error(`Selected build job was skipped: ${job.name}`);
+            const shards = [...latest.values()];
+            const shardsByVersions = new Map();
+            for (const shard of shards) {
+              if (shard.job.conclusion === 'skipped') throw new Error(`Skipped ${shard.job.name}`);
+              shard.key = [...shard.versions].sort().join('\n');
+              for (const version of shard.versions) {
+                if (builds.has(version)) throw new Error(`Duplicate build for ${version}`);
+                builds.set(version, {job: shard.job, shard});
               }
-              for (const version of versions) {
-                const previous = builds.get(version);
-                if (previous) {
-                  throw new Error(
-                    `Duplicate build jobs for ${version}: ${previous.job.name} and ${job.name}`,
-                  );
-                }
-                builds.set(version, {job, shard});
-              }
-            }
-
-            const expectedVersions = new Set();
-            for (let minor = 3; minor <= 26; minor++) {
-              expectedVersions.add(`1.${minor}`);
-            }
-            for (let version = 9; version <= 14; version++) {
-              expectedVersions.add(`gccgo-${version}`);
+              shardsByVersions.set(shard.key, shard);
             }
             const unexpectedVersions = [...builds.keys()]
-              .filter(version => !expectedVersions.has(version))
-              .sort();
+              .filter(version => !expectedVersions.has(version));
             const missingVersions = [...expectedVersions]
               .filter(version => !builds.has(version));
-            if (unexpectedVersions.length > 0 || missingVersions.length > 0) {
+            if (unexpectedVersions.length !== 0 || missingVersions.length !== 0) {
               throw new Error(
-                'Build job labels do not match expected versions. ' +
+                'Build version coverage mismatch. ' +
                 `Unexpected: ${unexpectedVersions.join(', ') || 'none'}. ` +
                 `Missing: ${missingVersions.join(', ') || 'none'}.`,
               );
             }
 
-            const artifacts = new Map();
-            const artifactEntries = fs.existsSync('build-status')
-              ? fs.readdirSync('build-status', {withFileTypes: true})
-              : [];
-            for (const entry of artifactEntries) {
-              if (!entry.isFile() || path.extname(entry.name) !== '.json') {
-                continue;
-              }
-              const file = path.join('build-status', entry.name);
-              const result = parseResult(file);
-              if (artifacts.has(result.go)) {
-                throw new Error(`Duplicate build status for ${result.go}`);
-              }
-              artifacts.set(result.go, result);
-            }
-            for (const version of artifacts.keys()) {
-              if (!builds.has(version)) {
-                throw new Error(`Build status has no matching job for ${version}`);
-              }
+            const files = fs.existsSync('build-status') ? fs.readdirSync('build-status') : [];
+            for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+              const value = read(path.join('build-status', name));
+              const key = Object.keys(value.results).sort().join('\n');
+              const shard = shardsByVersions.get(key);
+              if (!shard) throw new Error(`Unexpected build status shard ${name}`);
+              if (value.run_attempt !== shard.job.run_attempt) continue;
+              if (shard.value) throw new Error(`Duplicate build status for ${shard.job.name}`);
+              shard.value = value;
             }
 
-            for (const [version, build] of builds) {
-              let result = artifacts.get(version);
-              if (!result || result.run_attempt !== build.job.run_attempt) {
-                if (result) {
-                  core.notice(
-                    `Ignoring build status for ${version} from attempt ${result.run_attempt}; ` +
-                    `the latest job is from attempt ${build.job.run_attempt}.`,
-                  );
-                }
-                const fallback = path.join(
-                  process.env.RUNNER_TEMP,
-                  `build-status-${version}-${build.job.run_attempt}.json`,
-                );
-                execFileSync(
-                  './run-tests',
-                  [
-                    'plan',
-                    '-go', version,
-                    '-attempt', String(build.job.run_attempt),
-                    '-output', fallback,
-                  ],
-                  {stdio: 'inherit'},
-                );
-                result = parseResult(fallback);
-              }
-              if (result.go !== version) {
-                throw new Error(`Build status version does not match job for ${version}`);
-              }
-              if (result.run_attempt !== build.job.run_attempt) {
-                throw new Error(`Build status attempt does not match job for ${version}`);
-              }
-
-              build.reportedResults = Object.entries(result.results);
-              build.applicableResults = build.reportedResults.filter(
-                ([, status]) => status !== 'not_applicable',
-              );
-              if (build.applicableResults.length === 0) {
-                throw new Error(`No applicable architectures for ${version}`);
-              }
-            }
-
-            const shards = new Set([...builds.values()].map(build => build.shard));
+            const producer = new Set(['pending', 'success', 'failure', 'not_applicable']);
+            let architectures;
             for (const shard of shards) {
-              for (const version of shard.versions) {
-                if (builds.get(version)?.shard !== shard) {
-                  throw new Error(`Latest build jobs disagree for ${shard.job.name}`);
+              let value = shard.value;
+              if (!value) {
+                const output = path.join(process.env.RUNNER_TEMP, `plan-${shard.job.id}.json`);
+                execFileSync('./run-tests', [
+                  'plan', '-attempt', String(shard.job.run_attempt), '-output', output,
+                  ...shard.versions,
+                ], {stdio: 'inherit'});
+                value = read(output);
+                const key = Object.keys(value.results).sort().join('\n');
+                if (value.run_attempt !== shard.job.run_attempt || key !== shard.key) {
+                  throw new Error(`Invalid fallback for ${shard.job.name}`);
                 }
               }
-              const conclusion = shard.job.conclusion || shard.job.status;
-              shard.overrideSuccess =
-                conclusion !== 'success' &&
-                shard.versions.every(version =>
-                  builds.get(version).applicableResults.every(
-                    ([, status]) => status === 'success',
-                  ),
-                );
+              for (const [version, results] of Object.entries(value.results)) {
+                const build = builds.get(version);
+                if (!results || typeof results !== 'object' || Array.isArray(results)) {
+                  throw new Error(`Invalid results for ${version}`);
+                }
+                const names = Object.keys(results).sort();
+                const statuses = Object.values(results);
+                if (!names.length || names.some(name => !name) ||
+                    !statuses.some(status => status !== 'not_applicable')) {
+                  throw new Error(`No applicable architectures for ${version}`);
+                }
+                if (architectures && names.join() !== architectures.join()) {
+                  throw new Error(`Architecture mismatch for ${version}`);
+                }
+                if (statuses.some(status => !producer.has(status))) throw new Error(`Invalid ${version}`);
+                architectures = names;
+                build.results = results;
+              }
+              shard.allSuccess = shard.versions.every(version =>
+                Object.values(builds.get(version).results)
+                  .filter(status => status !== 'not_applicable')
+                  .every(status => status === 'success'));
             }
 
-            const architectureSet = new Set();
-            for (const [version, build] of builds) {
-              const conclusion = build.job.conclusion || build.job.status;
-              build.results = new Map();
-              for (const [architecture, reportedStatus] of build.reportedResults) {
-                let status = reportedStatus;
-                if (status === 'pending') {
-                  if (conclusion === 'success') {
-                    throw new Error(`Successful build for ${version} has a pending ${architecture} result`);
-                  }
-                  status = conclusion;
-                } else if (
-                  conclusion === 'success' &&
-                  status !== 'success' &&
-                  status !== 'not_applicable'
-                ) {
-                  throw new Error(`Successful build for ${version} has ${status} for ${architecture}`);
-                } else if (build.shard.overrideSuccess && status === 'success') {
-                  status = conclusion;
-                }
-                if (!symbols[status] && status !== 'not_applicable') {
-                  throw new Error(`Cannot render ${status} for ${version}/${architecture}`);
-                }
-                build.results.set(architecture, status);
-                architectureSet.add(architecture);
-              }
-            }
-
-            const architectures = [...architectureSet].sort();
-            const versions = [...builds.keys()].sort((a, b) => {
-              const aGccgo = a.startsWith('gccgo-');
-              const bGccgo = b.startsWith('gccgo-');
-              if (aGccgo !== bGccgo) {
-                return aGccgo ? 1 : -1;
-              }
-
-              const aParts = a.replace('gccgo-', '').split('.').map(Number);
-              const bParts = b.replace('gccgo-', '').split('.').map(Number);
-              return bParts[0] - aParts[0] || (bParts[1] || 0) - (aParts[1] || 0);
-            });
-
+            const symbols = {
+              action_required: '⚠️',
+              cancelled: '⏹️',
+              failure: '❌',
+              neutral: '➖',
+              skipped: '⏭️',
+              stale: '➖',
+              startup_failure: '❌',
+              success: '✅',
+              timed_out: '⏱️',
+            };
             const summary = [
               '## Build status',
               '',
@@ -463,28 +273,34 @@ jobs:
             const readme = summary.slice(4);
 
             for (const version of versions) {
+              const build = builds.get(version);
+              const conclusion = build.job.conclusion || build.job.status;
               const summaryCells = [];
               const readmeCells = [];
               for (const architecture of architectures) {
-                const build = builds.get(version);
-                const status = build.results.get(architecture);
+                let status = build.results[architecture];
                 if (status === 'not_applicable') {
                   summaryCells.push('—');
                   readmeCells.push('—');
                   continue;
                 }
-                if (!status) {
-                  throw new Error(`Missing ${architecture} result for ${version}`);
+                if (status === 'pending') {
+                  if (conclusion === 'success') {
+                    throw new Error(`Pending ${version}/${architecture}`);
+                  }
+                  status = conclusion;
+                } else if (conclusion === 'success' && status === 'failure') {
+                  throw new Error(`Successful job reported failure for ${version}/${architecture}`);
+                } else if (build.shard.allSuccess && conclusion !== 'success') {
+                  status = conclusion;
                 }
-
                 const symbol = symbols[status];
+                if (!symbol) {
+                  throw new Error(`Cannot render ${status}`);
+                }
                 const link = `[${symbol}](${build.job.html_url} "${status}")`;
                 summaryCells.push(link);
-                readmeCells.push(
-                  status === 'success'
-                    ? symbol
-                    : link,
-                );
+                readmeCells.push(status === 'success' ? symbol : link);
               }
               summary.push(`| ${version} | ${summaryCells.join(' | ')} |`);
               readme.push(`| ${version} | ${readmeCells.join(' | ')} |`);
@@ -494,11 +310,6 @@ jobs:
             summary.push('', legend);
             readme.push('', legend);
             await core.summary.addRaw(summary.join('\n')).write();
-
-            if (process.env.TEST_RUNNER_RESULT !== 'success') {
-              core.setFailed(`Test runner job concluded ${process.env.TEST_RUNNER_RESULT}.`);
-              return;
-            }
 
             const branch = context.payload.repository.default_branch;
             if (context.eventName === 'pull_request' || context.ref !== `refs/heads/${branch}`) {
