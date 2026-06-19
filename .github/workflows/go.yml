@@ -77,7 +77,7 @@ jobs:
             go: '1.6'
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # TODO(https://github.com/actions/setup-go/issues/756): Remove this step
       # and the cache input below when upstream stops warning about missing
       # cache paths for Go versions that predate caching.
