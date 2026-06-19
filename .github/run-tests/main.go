@@ -534,13 +534,23 @@ func (coordinator coordinator) runArchitecture(
 		} else {
 			raceEnvironment := targetEnvironment(workDirectory, architecture, true)
 			raceBinary := filepath.Join(directory, "goid.race.test")
+			raceBuildArguments := []string{"build", "-v", "-race"}
+			raceTestArguments := []string{"test", "-c", "-race"}
+			if architecture.zigTarget != "" {
+				// The Go internal linker cannot resolve libc references in
+				// cross-race objects linked by Zig. Use Zig for the final link.
+				raceBuildArguments = append(raceBuildArguments, "-ldflags=-linkmode=external")
+				raceTestArguments = append(raceTestArguments, "-ldflags=-linkmode=external")
+			}
+			raceBuildArguments = append(raceBuildArguments, "./...")
+			raceTestArguments = append(raceTestArguments, "-o", raceBinary, "./...")
 			raceReady := true
-			if err := coordinator.execute(raceEnvironment, "go", "build", "-v", "-race", "./..."); err != nil {
+			if err := coordinator.execute(raceEnvironment, "go", raceBuildArguments...); err != nil {
 				failures = append(failures, err)
 				raceReady = false
 			}
 			if raceReady {
-				if err := coordinator.execute(raceEnvironment, "go", "test", "-c", "-race", "-o", raceBinary, "./..."); err != nil {
+				if err := coordinator.execute(raceEnvironment, "go", raceTestArguments...); err != nil {
 					failures = append(failures, err)
 					raceReady = false
 				}
