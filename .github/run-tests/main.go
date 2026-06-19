@@ -9,16 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
-	resultSchema = 1
-	zigCCPrefix  = "zig-cc-"
+	goReleasesURL = "https://go.dev/dl/?mode=json&include=all"
+	resultSchema  = 1
+	zigCCPrefix   = "zig-cc-"
 )
 
 type resultStatus string
@@ -31,16 +32,40 @@ const (
 )
 
 type resultFile struct {
-	Schema        int                     `json:"schema"`
-	Go            string                  `json:"go"`
-	RunAttempt    int                     `json:"run_attempt"`
-	CrossCompiler string                  `json:"cross_compiler,omitempty"`
-	Results       map[string]resultStatus `json:"results"`
+	Schema     int                     `json:"schema"`
+	Go         string                  `json:"go"`
+	RunAttempt int                     `json:"run_attempt"`
+	Results    map[string]resultStatus `json:"results"`
 }
 
 type goVersion struct {
 	gccgo bool
 	minor int
+}
+
+type toolchain struct {
+	label   string
+	command string
+}
+
+type plannedToolchain struct {
+	toolchain
+	version goVersion
+	results resultFile
+	output  string
+}
+
+type goRelease struct {
+	Version string          `json:"version"`
+	Stable  bool            `json:"stable"`
+	Files   []goReleaseFile `json:"files"`
+}
+
+type goReleaseFile struct {
+	Filename string `json:"filename"`
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	Kind     string `json:"kind"`
 }
 
 type architecture struct {
@@ -116,8 +141,11 @@ var architectures = []architecture{
 }
 
 var (
-	inlineGetPattern = regexp.MustCompile(`(?m)can inline Get$`)
-	goVersionPattern = regexp.MustCompile(`\bgo(1\.[0-9]+(?:\.[0-9]+)?)\b`)
+	inlineGetPattern      = regexp.MustCompile(`(?m)can inline Get$`)
+	goLabelPattern        = regexp.MustCompile(`^1\.([0-9]+)(?:\.([0-9]+))?$`)
+	gccgoLabelPattern     = regexp.MustCompile(`^gccgo-([0-9]+)$`)
+	goVersionPattern      = regexp.MustCompile(`\bgo(1\.[0-9]+(?:\.[0-9]+)?)\b`)
+	releaseVersionPattern = regexp.MustCompile(`^go1\.([0-9]+)\.([0-9]+)$`)
 )
 
 func main() {
@@ -132,22 +160,21 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fatal(fmt.Errorf("usage: run-tests <plan|run> -go <version> -attempt <positive integer> -output <path>"))
-	}
-
-	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
-	goLabel := flags.String("go", "", "matrix Go version label")
-	output := flags.String("output", "", "result JSON path")
-	runAttempt := flags.Int("attempt", 0, "workflow run attempt")
-	if err := flags.Parse(os.Args[2:]); err != nil {
-		fatal(err)
-	}
-	if *goLabel == "" || *output == "" || *runAttempt <= 0 || flags.NArg() != 0 {
-		fatal(fmt.Errorf("usage: run-tests %s -go <version> -attempt <positive integer> -output <path>", os.Args[1]))
+		fatal(fmt.Errorf("usage: run-tests <plan|download|installed> [arguments]"))
 	}
 
 	switch os.Args[1] {
 	case "plan":
+		flags := flag.NewFlagSet("plan", flag.ContinueOnError)
+		goLabel := flags.String("go", "", "matrix Go version label")
+		output := flags.String("output", "", "result JSON path")
+		runAttempt := flags.Int("attempt", 0, "workflow run attempt")
+		if err := flags.Parse(os.Args[2:]); err != nil {
+			fatal(err)
+		}
+		if *goLabel == "" || *output == "" || *runAttempt <= 0 || flags.NArg() != 0 {
+			fatal(fmt.Errorf("usage: run-tests plan -go <version> -attempt <positive integer> -output <path>"))
+		}
 		results, err := newPlan(*goLabel, *runAttempt)
 		if err != nil {
 			fatal(err)
@@ -155,39 +182,46 @@ func main() {
 		if err := writeResults(*output, results); err != nil {
 			fatal(err)
 		}
-	case "run":
+	case "download":
+		flags := flag.NewFlagSet("download", flag.ContinueOnError)
+		bootstrapGo := flags.String("bootstrap-go", "", "bootstrap Go command")
+		output := flags.String("output", "", "result JSON directory")
+		runAttempt := flags.Int("attempt", 0, "workflow run attempt")
+		if err := flags.Parse(os.Args[2:]); err != nil {
+			fatal(err)
+		}
+		if *bootstrapGo == "" || *output == "" || *runAttempt <= 0 || flags.NArg() == 0 {
+			fatal(fmt.Errorf("usage: run-tests download -bootstrap-go <command> -attempt <positive integer> -output <directory> <minor>..."))
+		}
 		if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-			fatal(fmt.Errorf("run requires linux/amd64, got %s/%s", runtime.GOOS, runtime.GOARCH))
+			fatal(fmt.Errorf("download requires linux/amd64, got %s/%s", runtime.GOOS, runtime.GOARCH))
 		}
-
-		version, err := parseGoVersion(*goLabel)
-		if err != nil {
+		if err := runDownload(
+			*bootstrapGo,
+			*runAttempt,
+			*output,
+			flags.Args(),
+			fetchGoReleases,
+			runCommand,
+			runPlannedToolchain,
+		); err != nil {
 			fatal(err)
 		}
-		expected, err := newPlan(*goLabel, *runAttempt)
-		if err != nil {
+	case "installed":
+		flags := flag.NewFlagSet("installed", flag.ContinueOnError)
+		output := flags.String("output", "", "result JSON directory")
+		runAttempt := flags.Int("attempt", 0, "workflow run attempt")
+		if err := flags.Parse(os.Args[2:]); err != nil {
 			fatal(err)
 		}
-		results, err := readResults(*output)
-		if err != nil {
+		if *output == "" || *runAttempt <= 0 || flags.NArg() == 0 {
+			fatal(fmt.Errorf("usage: run-tests installed -attempt <positive integer> -output <directory> <label=command>..."))
+		}
+		if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+			fatal(fmt.Errorf("installed requires linux/amd64, got %s/%s", runtime.GOOS, runtime.GOARCH))
+		}
+		if err := runInstalled(*runAttempt, *output, flags.Args(), runPlannedToolchain); err != nil {
 			fatal(err)
-		}
-		if !reflect.DeepEqual(results, expected) {
-			fatal(fmt.Errorf("%s does not contain the plan for %s", *output, *goLabel))
-		}
-
-		coordinator := coordinator{
-			version: version,
-			results: &results,
-			output:  *output,
-			execute: runCommand,
-		}
-		failures := coordinator.run()
-		for _, err := range failures {
-			fmt.Fprintln(os.Stderr, err)
-		}
-		if len(failures) != 0 {
-			os.Exit(1)
 		}
 	default:
 		fatal(fmt.Errorf("unknown command %q", os.Args[1]))
@@ -200,30 +234,345 @@ func fatal(err error) {
 }
 
 func parseGoVersion(label string) (goVersion, error) {
-	if strings.HasPrefix(label, "gccgo-") {
-		if _, err := strconv.Atoi(strings.TrimPrefix(label, "gccgo-")); err != nil {
-			return goVersion{}, fmt.Errorf("invalid Go version %q: %s", label, err)
+	if match := gccgoLabelPattern.FindStringSubmatch(label); match != nil {
+		major, err := strconv.Atoi(match[1])
+		if err != nil || major == 0 || strconv.Itoa(major) != match[1] {
+			return goVersion{}, fmt.Errorf("invalid Go version %q", label)
 		}
 		return goVersion{gccgo: true}, nil
 	}
 
-	parts := strings.Split(label, ".")
-	if len(parts) < 2 || len(parts) > 3 || parts[0] != "1" {
+	match := goLabelPattern.FindStringSubmatch(label)
+	if match == nil {
 		return goVersion{}, fmt.Errorf("invalid Go version %q", label)
 	}
-	minor, err := strconv.Atoi(parts[1])
+	minor, err := strconv.Atoi(match[1])
 	if err != nil {
 		return goVersion{}, fmt.Errorf("invalid Go version %q: %s", label, err)
 	}
-	if minor < 3 {
+	if minor < 3 || strconv.Itoa(minor) != match[1] {
 		return goVersion{}, fmt.Errorf("unsupported Go version %q", label)
 	}
-	if len(parts) == 3 {
-		if _, err := strconv.Atoi(parts[2]); err != nil {
-			return goVersion{}, fmt.Errorf("invalid Go version %q: %s", label, err)
+	if match[2] != "" {
+		patch, err := strconv.Atoi(match[2])
+		if err != nil || strconv.Itoa(patch) != match[2] {
+			return goVersion{}, fmt.Errorf("invalid Go version %q", label)
 		}
 	}
 	return goVersion{minor: minor}, nil
+}
+
+type releaseFetcher func() ([]goRelease, error)
+type toolchainRunner func(*plannedToolchain) []error
+
+func parseDownloadLabels(labels []string) ([]toolchain, error) {
+	if len(labels) == 0 {
+		return nil, fmt.Errorf("no Go versions specified")
+	}
+
+	seen := make(map[string]bool, len(labels))
+	toolchains := make([]toolchain, 0, len(labels))
+	for _, label := range labels {
+		version, err := parseGoVersion(label)
+		if err != nil {
+			return nil, err
+		}
+		if version.gccgo || label != fmt.Sprintf("1.%d", version.minor) {
+			return nil, fmt.Errorf("download requires a Go minor label, got %q", label)
+		}
+		if version.minor < 5 {
+			return nil, fmt.Errorf("download does not support Go version %q; use installed", label)
+		}
+		if seen[label] {
+			return nil, fmt.Errorf("duplicate Go version %q", label)
+		}
+		seen[label] = true
+		toolchains = append(toolchains, toolchain{label: label})
+	}
+	return toolchains, nil
+}
+
+func parseInstalledSpecs(specs []string) ([]toolchain, error) {
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("no Go toolchains specified")
+	}
+
+	seen := make(map[string]bool, len(specs))
+	toolchains := make([]toolchain, 0, len(specs))
+	for _, spec := range specs {
+		label, command, ok := strings.Cut(spec, "=")
+		if !ok || command == "" {
+			return nil, fmt.Errorf("invalid installed toolchain %q; want label=command", spec)
+		}
+		if _, err := parseGoVersion(label); err != nil {
+			return nil, err
+		}
+		if seen[label] {
+			return nil, fmt.Errorf("duplicate Go version %q", label)
+		}
+		seen[label] = true
+		toolchains = append(toolchains, toolchain{label: label, command: command})
+	}
+	return toolchains, nil
+}
+
+func planToolchains(toolchains []toolchain, runAttempt int, outputDirectory string) ([]*plannedToolchain, error) {
+	plans := make([]*plannedToolchain, 0, len(toolchains))
+	var failures []error
+	for _, toolchain := range toolchains {
+		version, err := parseGoVersion(toolchain.label)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		results, err := newPlan(toolchain.label, runAttempt)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		output := filepath.Join(outputDirectory, "build-status-"+toolchain.label+".json")
+		if err := writeResults(output, results); err != nil {
+			failures = append(failures, fmt.Errorf("plan %s: %s", toolchain.label, err))
+			continue
+		}
+		plans = append(plans, &plannedToolchain{
+			toolchain: toolchain,
+			version:   version,
+			results:   results,
+			output:    output,
+		})
+	}
+	return plans, errors.Join(failures...)
+}
+
+func runToolchains(plans []*plannedToolchain, runner toolchainRunner) error {
+	var failures []error
+	for _, plan := range plans {
+		for _, err := range runner(plan) {
+			failures = append(failures, fmt.Errorf("%s: %s", plan.label, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func runPlannedToolchain(plan *plannedToolchain) []error {
+	coordinator := coordinator{
+		version:   plan.version,
+		goCommand: plan.command,
+		results:   &plan.results,
+		output:    plan.output,
+		execute:   runCommand,
+	}
+	return coordinator.run()
+}
+
+func runInstalled(runAttempt int, outputDirectory string, specs []string, runner toolchainRunner) error {
+	toolchains, err := parseInstalledSpecs(specs)
+	if err != nil {
+		return err
+	}
+	plans, err := planToolchains(toolchains, runAttempt, outputDirectory)
+	var failures []error
+	if err != nil {
+		failures = append(failures, err)
+	}
+	if err := runToolchains(plans, runner); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+func runDownload(
+	bootstrapGo string,
+	runAttempt int,
+	outputDirectory string,
+	labels []string,
+	fetch releaseFetcher,
+	execute commandRunner,
+	runner toolchainRunner,
+) error {
+	toolchains, err := parseDownloadLabels(labels)
+	if err != nil {
+		return err
+	}
+	plans, err := planToolchains(toolchains, runAttempt, outputDirectory)
+	var failures []error
+	if err != nil {
+		failures = append(failures, err)
+	}
+	if len(plans) == 0 {
+		return errors.Join(failures...)
+	}
+
+	releases, err := fetch()
+	if err != nil {
+		failures = append(failures, fmt.Errorf("fetch Go releases: %s", err))
+		return errors.Join(failures...)
+	}
+	plannedLabels := make([]string, 0, len(plans))
+	for _, plan := range plans {
+		plannedLabels = append(plannedLabels, plan.label)
+	}
+	selected, err := selectGoReleases(releases, plannedLabels)
+	if err != nil {
+		failures = append(failures, err)
+	}
+
+	workDirectory, err := os.MkdirTemp("", "goid-download-")
+	if err != nil {
+		failures = append(failures, fmt.Errorf("create download directory: %s", err))
+		return errors.Join(failures...)
+	}
+	defer os.RemoveAll(workDirectory)
+	binDirectory := filepath.Join(workDirectory, "bin")
+	if err := os.Mkdir(binDirectory, 0o755); err != nil {
+		failures = append(failures, fmt.Errorf("create wrapper directory: %s", err))
+		return errors.Join(failures...)
+	}
+
+	var ready []*plannedToolchain
+	installArguments := []string{"install"}
+	for _, plan := range plans {
+		exact, ok := selected[plan.label]
+		if !ok {
+			continue
+		}
+		plan.command = filepath.Join(binDirectory, exact)
+		installArguments = append(installArguments, "golang.org/dl/"+exact+"@latest")
+		ready = append(ready, plan)
+	}
+	if len(ready) == 0 {
+		return errors.Join(failures...)
+	}
+	if err := execute(toolchainEnvironment("GOBIN="+binDirectory), bootstrapGo, installArguments...); err != nil {
+		failures = append(failures, fmt.Errorf("install Go download wrappers: %s", err))
+		return errors.Join(failures...)
+	}
+
+	downloadFailures := make([]error, len(ready))
+	var downloads sync.WaitGroup
+	for index, plan := range ready {
+		downloads.Add(1)
+		go func(index int, plan *plannedToolchain) {
+			defer downloads.Done()
+			if err := execute(toolchainEnvironment(), plan.command, "download"); err != nil {
+				downloadFailures[index] = fmt.Errorf("%s: download toolchain: %s", plan.label, err)
+			}
+		}(index, plan)
+	}
+	downloads.Wait()
+
+	downloaded := ready[:0]
+	for index, plan := range ready {
+		if downloadFailures[index] != nil {
+			failures = append(failures, downloadFailures[index])
+			continue
+		}
+		downloaded = append(downloaded, plan)
+	}
+	if err := runToolchains(downloaded, runner); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+func fetchGoReleases() ([]goRelease, error) {
+	output, err := commandOutput(
+		nil,
+		"curl",
+		"--fail",
+		"--location",
+		"--max-time", "30",
+		"--show-error",
+		"--silent",
+		goReleasesURL,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var releases []goRelease
+	if err := json.NewDecoder(strings.NewReader(output)).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("decode %s: %s", goReleasesURL, err)
+	}
+	return releases, nil
+}
+
+func selectGoReleases(releases []goRelease, labels []string) (map[string]string, error) {
+	requested := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		requested[label] = true
+	}
+	type selection struct {
+		version string
+		patch   int
+	}
+	selections := make(map[string]selection, len(labels))
+	for _, release := range releases {
+		if !release.Stable {
+			continue
+		}
+		match := releaseVersionPattern.FindStringSubmatch(release.Version)
+		if match == nil {
+			continue
+		}
+		minor, err := strconv.Atoi(match[1])
+		if err != nil || strconv.Itoa(minor) != match[1] {
+			continue
+		}
+		label := fmt.Sprintf("1.%d", minor)
+		if !requested[label] {
+			continue
+		}
+		patch, err := strconv.Atoi(match[2])
+		if err != nil || strconv.Itoa(patch) != match[2] {
+			continue
+		}
+		archive := release.Version + ".linux-amd64.tar.gz"
+		available := false
+		for _, file := range release.Files {
+			if file.Filename == archive && file.OS == "linux" && file.Arch == "amd64" && file.Kind == "archive" {
+				available = true
+				break
+			}
+		}
+		if !available {
+			continue
+		}
+		selected, ok := selections[label]
+		if !ok || patch > selected.patch {
+			selections[label] = selection{version: release.Version, patch: patch}
+		}
+	}
+
+	selected := make(map[string]string, len(selections))
+	var failures []error
+	for _, label := range labels {
+		selection, ok := selections[label]
+		if !ok {
+			failures = append(failures, fmt.Errorf("no stable linux/amd64 release found for Go %s", label))
+			continue
+		}
+		selected[label] = selection.version
+	}
+	return selected, errors.Join(failures...)
+}
+
+func toolchainEnvironment(assignments ...string) []string {
+	assignments = append([]string{"GOTOOLCHAIN=local"}, assignments...)
+	overridden := make(map[string]bool, len(assignments))
+	for _, assignment := range assignments {
+		key, _, _ := strings.Cut(assignment, "=")
+		overridden[key] = true
+	}
+	environment := make([]string, 0, len(os.Environ())+len(assignments))
+	for _, assignment := range os.Environ() {
+		key, _, _ := strings.Cut(assignment, "=")
+		if key != "GOROOT" && !overridden[key] {
+			environment = append(environment, assignment)
+		}
+	}
+	return append(environment, assignments...)
 }
 
 func newPlan(label string, runAttempt int) (resultFile, error) {
@@ -247,11 +596,6 @@ func newPlan(label string, runAttempt int) (resultFile, error) {
 			status = statusPending
 		}
 		results.Results[architecture.name] = status
-		if status == statusPending &&
-			architecture.zigTarget != "" &&
-			architecture.supportsRace(version) {
-			results.CrossCompiler = "zig"
-		}
 	}
 	return results, nil
 }
@@ -314,10 +658,11 @@ func writeResults(path string, results resultFile) error {
 }
 
 type coordinator struct {
-	version goVersion
-	results *resultFile
-	output  string
-	execute commandRunner
+	version   goVersion
+	goCommand string
+	results   *resultFile
+	output    string
+	execute   commandRunner
 }
 
 type commandRunner func([]string, string, ...string) error
@@ -428,7 +773,7 @@ func (coordinator coordinator) prepareRace(workDirectory string) map[string][]er
 		}
 	}
 
-	version, err := resolvedGoVersion()
+	version, err := resolvedGoVersion(coordinator.goCommand)
 	if err != nil {
 		for _, architecture := range targets {
 			failures[architecture.name] = append(failures[architecture.name], err)
@@ -436,7 +781,7 @@ func (coordinator coordinator) prepareRace(workDirectory string) map[string][]er
 		fmt.Println("::endgroup::")
 		return failures
 	}
-	goroot, err := commandOutput(nil, "go", "env", "GOROOT")
+	goroot, err := commandOutput(toolchainEnvironment(), coordinator.goCommand, "env", "GOROOT")
 	if err != nil {
 		for _, architecture := range targets {
 			failures[architecture.name] = append(failures[architecture.name], err)
@@ -522,7 +867,7 @@ func (coordinator coordinator) runArchitecture(
 	if !coordinator.version.gccgo && coordinator.version.minor >= 12 {
 		// Go 1.12 introduced the inliner that should inline Get. See
 		// https://go.dev/doc/go1.12#compiler.
-		if err := checkInlining(environment); err != nil {
+		if err := checkInlining(coordinator.goCommand, environment); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -541,12 +886,12 @@ func (coordinator coordinator) runArchitecture(
 		defer os.Remove(normalBinary)
 	}
 	normalReady := true
-	if err := coordinator.execute(environment, "go", "build", "-v", "./..."); err != nil {
+	if err := coordinator.execute(environment, coordinator.goCommand, "build", "-v", "./..."); err != nil {
 		failures = append(failures, err)
 		normalReady = false
 	}
 	if normalReady {
-		if err := coordinator.execute(environment, "go", testArguments...); err != nil {
+		if err := coordinator.execute(environment, coordinator.goCommand, testArguments...); err != nil {
 			failures = append(failures, err)
 			normalReady = false
 		}
@@ -574,12 +919,12 @@ func (coordinator coordinator) runArchitecture(
 			raceBuildArguments = append(raceBuildArguments, "./...")
 			raceTestArguments = append(raceTestArguments, "-o", raceBinary, "./...")
 			raceReady := true
-			if err := coordinator.execute(raceEnvironment, "go", raceBuildArguments...); err != nil {
+			if err := coordinator.execute(raceEnvironment, coordinator.goCommand, raceBuildArguments...); err != nil {
 				failures = append(failures, err)
 				raceReady = false
 			}
 			if raceReady {
-				if err := coordinator.execute(raceEnvironment, "go", raceTestArguments...); err != nil {
+				if err := coordinator.execute(raceEnvironment, coordinator.goCommand, raceTestArguments...); err != nil {
 					failures = append(failures, err)
 					raceReady = false
 				}
@@ -604,7 +949,7 @@ func (coordinator coordinator) runArchitecture(
 	}
 
 	executor := filepath.Join(directory, "execute")
-	if err := coordinator.execute(environment, "go", "build", "-o", executor, "./.github/run-tests/execute"); err != nil {
+	if err := coordinator.execute(environment, coordinator.goCommand, "build", "-o", executor, "./.github/run-tests/execute"); err != nil {
 		return append(failures, err)
 	}
 	if err := runDocker(coordinator.execute, workDirectory, architecture, binaries); err != nil {
@@ -613,8 +958,8 @@ func (coordinator coordinator) runArchitecture(
 	return failures
 }
 
-func checkInlining(environment []string) error {
-	command := exec.Command("go", "build", "-gcflags=-m")
+func checkInlining(goCommand string, environment []string) error {
+	command := exec.Command(goCommand, "build", "-gcflags=-m")
 	command.Env = environment
 	// Optimization diagnostics are expected output. Replay them only if the
 	// command or assertion fails.
@@ -632,11 +977,11 @@ func checkInlining(environment []string) error {
 		return errors.Join(failures...)
 	}
 	if err := command.Run(); err != nil {
-		return errors.Join(fmt.Errorf("go build -gcflags=-m: %s", err), replayOutput())
+		return errors.Join(fmt.Errorf("%s build -gcflags=-m: %s", goCommand, err), replayOutput())
 	}
 	if !inlineGetPattern.Match(stderr.Bytes()) {
 		return errors.Join(
-			fmt.Errorf("go build -gcflags=-m did not report that Get can be inlined"),
+			fmt.Errorf("%s build -gcflags=-m did not report that Get can be inlined", goCommand),
 			replayOutput(),
 		)
 	}
@@ -700,7 +1045,9 @@ func targetEnvironment(workDirectory string, architecture architecture, race boo
 		"CGO_ENABLED":   true,
 		"GOARCH":        true,
 		"GOARM":         true,
+		"GOROOT":        true,
 		"GOOS":          true,
+		"GOTOOLCHAIN":   true,
 	}
 	environment := make([]string, 0, len(os.Environ())+6)
 	for _, assignment := range os.Environ() {
@@ -709,7 +1056,7 @@ func targetEnvironment(workDirectory string, architecture architecture, race boo
 			environment = append(environment, assignment)
 		}
 	}
-	environment = append(environment, "GOOS=linux", "GOARCH="+architecture.goarch)
+	environment = append(environment, "GOTOOLCHAIN=local", "GOOS=linux", "GOARCH="+architecture.goarch)
 	if architecture.goarm != "" {
 		environment = append(environment, "GOARM="+architecture.goarm)
 	}
@@ -740,8 +1087,8 @@ func runZigCC(execute commandRunner, target string, compilerArguments []string) 
 	return execute(nil, "zig", arguments...)
 }
 
-func resolvedGoVersion() (string, error) {
-	output, err := commandOutput(nil, "go", "version")
+func resolvedGoVersion(goCommand string) (string, error) {
+	output, err := commandOutput(toolchainEnvironment(), goCommand, "version")
 	if err != nil {
 		return "", err
 	}
