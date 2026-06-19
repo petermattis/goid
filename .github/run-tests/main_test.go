@@ -127,7 +127,7 @@ func TestZigCC(t *testing.T) {
 		"cc",
 		"-target", "aarch64-linux-gnu",
 		"-o", "output",
-		"-Wl,race_linux_arm64.syso",
+		"race_linux_arm64.syso.o",
 		"other.o",
 	}
 	if !reflect.DeepEqual(arguments, want) {

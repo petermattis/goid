@@ -435,6 +435,11 @@ func (coordinator coordinator) prepareRace(workDirectory string) map[string][]er
 				failures[architecture.name],
 				fmt.Errorf("download race runtime: %s", err),
 			)
+		} else if err := os.Link(path, path+".o"); err != nil {
+			failures[architecture.name] = append(
+				failures[architecture.name],
+				fmt.Errorf("create Zig race object alias: %s", err),
+			)
 		}
 	}
 	fmt.Println("::endgroup::")
@@ -672,9 +677,9 @@ func runZigCC(execute commandRunner, target string, compilerArguments []string) 
 	arguments := []string{"cc", "-target", target}
 	for _, argument := range compilerArguments {
 		// Unlike GCC, Zig rejects object files with the .syso extension.
-		// Pass them directly to the linker instead.
+		// prepareRace creates an object alias that Zig recognizes.
 		if filepath.Ext(argument) == ".syso" {
-			argument = "-Wl," + argument
+			argument += ".o"
 		}
 		arguments = append(arguments, argument)
 	}
