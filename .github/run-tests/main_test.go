@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestPlanApplicability(t *testing.T) {
@@ -263,10 +265,17 @@ func TestCoordinatorContinuesAndCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checkpointObserved := false
-	raceBuildObserved := false
-	raceBinaryObserved := false
-	normalBinaryObserved := false
+	type observations struct {
+		sync.Mutex
+		overlapObserved      bool
+		checkpointObserved   bool
+		raceBuildObserved    bool
+		raceBinaryObserved   bool
+		normalBinaryObserved bool
+	}
+	var observed observations
+	armv7Started := make(chan struct{})
+	var armv7StartedOnce sync.Once
 	execute := func(environment []string, name string, arguments ...string) error {
 		var goarch, goarm string
 		for _, assignment := range environment {
@@ -281,29 +290,55 @@ func TestCoordinatorContinuesAndCheckpoints(t *testing.T) {
 		raceBuild := name == "go" && reflect.DeepEqual(arguments, []string{"build", "-v", "-race", "./..."})
 
 		if normalBuild && goarch == "arm" && goarm == "6" {
+			select {
+			case <-armv7Started:
+				observed.Lock()
+				observed.overlapObserved = true
+				observed.Unlock()
+			case <-time.After(5 * time.Second):
+				return fmt.Errorf("armv7 build did not start")
+			}
 			return fmt.Errorf("armv6 build failed")
 		}
 		if normalBuild && goarch == "arm" && goarm == "7" {
-			checkpoint, err := readResults(output)
-			if err != nil {
-				t.Fatal(err)
+			armv7StartedOnce.Do(func() {
+				close(armv7Started)
+			})
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				checkpoint, err := readResults(output)
+				if err != nil {
+					return fmt.Errorf("read checkpoint: %s", err)
+				}
+				if checkpoint.Results["armv6"] == statusFailure {
+					observed.Lock()
+					observed.checkpointObserved = true
+					observed.Unlock()
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("armv6 result was not checkpointed")
+				}
+				time.Sleep(time.Millisecond)
 			}
-			if got := checkpoint.Results["armv6"]; got != statusFailure {
-				t.Fatalf("armv6 checkpoint: got %q, want %q", got, statusFailure)
-			}
-			checkpointObserved = true
 		}
 		if normalBuild && goarch == "amd64" {
 			return fmt.Errorf("x64 build failed")
 		}
 		if raceBuild && goarch == "amd64" {
-			raceBuildObserved = true
+			observed.Lock()
+			observed.raceBuildObserved = true
+			observed.Unlock()
 		}
 		if filepath.Base(name) == "goid.race.test" {
-			raceBinaryObserved = true
+			observed.Lock()
+			observed.raceBinaryObserved = true
+			observed.Unlock()
 		}
 		if filepath.Base(name) == "goid.test" && filepath.Base(filepath.Dir(name)) == "x64" {
-			normalBinaryObserved = true
+			observed.Lock()
+			observed.normalBinaryObserved = true
+			observed.Unlock()
 		}
 		return nil
 	}
@@ -318,6 +353,14 @@ func TestCoordinatorContinuesAndCheckpoints(t *testing.T) {
 	if len(failures) != 2 {
 		t.Fatalf("got %d failures, want 2", len(failures))
 	}
+	for index, want := range []string{
+		"armv6: armv6 build failed",
+		"x64: x64 build failed",
+	} {
+		if got := failures[index].Error(); got != want {
+			t.Errorf("failure %d: got %q, want %q", index, got, want)
+		}
+	}
 	for architecture, want := range map[string]resultStatus{
 		"armv6":   statusFailure,
 		"armv7":   statusSuccess,
@@ -330,13 +373,18 @@ func TestCoordinatorContinuesAndCheckpoints(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", architecture, got, want)
 		}
 	}
-	if !checkpointObserved {
-		t.Error("armv6 result was not checkpointed before armv7 started")
+	observed.Lock()
+	defer observed.Unlock()
+	if !observed.overlapObserved {
+		t.Error("armv6 and armv7 builds did not overlap")
 	}
-	if !raceBuildObserved || !raceBinaryObserved {
+	if !observed.checkpointObserved {
+		t.Error("armv6 result was not checkpointed while armv7 was running")
+	}
+	if !observed.raceBuildObserved || !observed.raceBinaryObserved {
 		t.Error("race build did not complete after the normal x64 build failed")
 	}
-	if normalBinaryObserved {
+	if observed.normalBinaryObserved {
 		t.Error("normal x64 binary ran after its build failed")
 	}
 }

@@ -331,35 +331,64 @@ func (coordinator coordinator) run() []error {
 
 	raceFailures := coordinator.prepareRace(workDirectory)
 	emulationFailures := coordinator.prepareEmulation()
-	var failures []error
+	type completedArchitecture struct {
+		architecture architecture
+		failures     []error
+	}
+	completed := make(chan completedArchitecture, len(architectures))
+	pending := 0
 
-	for _, architecture := range architectures {
-		if coordinator.results.Results[architecture.name] == statusNotApplicable {
+	fmt.Println("::group::architectures")
+	for _, target := range architectures {
+		if coordinator.results.Results[target.name] == statusNotApplicable {
 			continue
 		}
 
-		fmt.Printf("::group::%s\n", architecture.name)
-		architectureFailures := coordinator.runArchitecture(
-			workDirectory,
-			architecture,
-			raceFailures[architecture.name],
-			emulationFailures[architecture.name],
-		)
-		if len(architectureFailures) == 0 {
-			coordinator.results.Results[architecture.name] = statusSuccess
-		} else {
-			coordinator.results.Results[architecture.name] = statusFailure
-			for _, err := range architectureFailures {
-				failures = append(failures, fmt.Errorf("%s: %s", architecture.name, err))
+		pending++
+		go func(target architecture) {
+			fmt.Printf("--- %s started ---\n", target.name)
+			failures := coordinator.runArchitecture(
+				workDirectory,
+				target,
+				raceFailures[target.name],
+				emulationFailures[target.name],
+			)
+			fmt.Printf("--- %s finished ---\n", target.name)
+			completed <- completedArchitecture{
+				architecture: target,
+				failures:     failures,
 			}
+		}(target)
+	}
+
+	completedFailures := make(map[string][]error, pending)
+	var writeFailures []error
+	checkpointFailed := false
+	for ; pending > 0; pending-- {
+		result := <-completed
+		completedFailures[result.architecture.name] = result.failures
+		status := statusSuccess
+		if len(result.failures) != 0 {
+			status = statusFailure
+		}
+		coordinator.results.Results[result.architecture.name] = status
+		if checkpointFailed {
+			continue
 		}
 		if err := writeResults(coordinator.output, *coordinator.results); err != nil {
-			failures = append(failures, err)
-			fmt.Println("::endgroup::")
-			break
+			writeFailures = append(writeFailures, err)
+			checkpointFailed = true
 		}
-		fmt.Println("::endgroup::")
 	}
+	fmt.Println("::endgroup::")
+
+	var failures []error
+	for _, architecture := range architectures {
+		for _, err := range completedFailures[architecture.name] {
+			failures = append(failures, fmt.Errorf("%s: %s", architecture.name, err))
+		}
+	}
+	failures = append(failures, writeFailures...)
 	return failures
 }
 
