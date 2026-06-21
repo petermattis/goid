@@ -10,286 +10,110 @@ on:
   schedule:
     - cron: 00 4 * * *
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: build (${{ matrix.go }}, ${{ matrix.arch }})
+    # The report reads the whitespace-separated versions from this name.
+    name: build (${{ matrix.versions }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Cross-compilation became possible in go1.5 with the removal of C
-          # code from the compiler. See https://go.dev/doc/go1.5#c.
-          #
-          # gccgo cross-compilation requires a target-specific GCC toolchain
-          # rather than GOARCH, so only native x64 builds are included here.
-          - arch: x64
+          # A cell shares one hosted runner across all listed versions. The
+          # toolchains download together, then run sequentially; pairing old
+          # and new releases amortizes startup while balancing shard runtimes.
+          - versions: '1.26 1.5'
+          - versions: '1.25 1.6'
+          - versions: '1.24 1.7'
+          - versions: '1.23 1.8'
+          - versions: '1.22 1.9'
+          - versions: '1.21 1.10'
+          - versions: '1.20 1.11'
+          - versions: '1.19 1.12'
+          - versions: '1.18 1.13'
+          - versions: '1.17 1.14'
+          - versions: '1.16 1.15'
+          # Go 1.3 and 1.4 have no golang.org/dl wrappers, so the go key marks
+          # cells that setup-go must provision.
+          - versions: '1.3'
             go: '1.3'
-          - arch: x64
+          - versions: '1.4'
             go: '1.4'
-          - arch: x64
-            go: gccgo-9
-          - arch: x64
-            go: gccgo-10
-          - arch: x64
-            go: gccgo-11
-          - arch: x64
-            go: gccgo-12
-          - arch: x64
-            go: gccgo-13
-          - arch: x64
-            go: gccgo-14
-        arch:
-          - armv6
-          - armv7
-          - aarch64
-          - s390x
-          - 386
-          - x64
-        go:
-          - '1.5'
-          - '1.6'
-          - '1.7'
-          - '1.8'
-          - '1.9'
-          - '1.10'
-          - '1.11'
-          - '1.12'
-          - '1.13'
-          - '1.14'
-          - '1.15'
-          - '1.16'
-          - '1.17'
-          - '1.18'
-          - '1.19'
-          - '1.20'
-          - '1.21'
-          - '1.22'
-          - '1.23'
-          - '1.24'
-          - '1.25'
-          - '1.26'
-        exclude:
-          # Support for s390x was added in Go1.7. See https://go.dev/doc/go1.7#ports.
-          - arch: s390x
-            go: '1.5'
-          - arch: s390x
-            go: '1.6'
-
+          - versions: gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14
+            gccgo: true
     steps:
       - uses: actions/checkout@v7
-      # TODO(https://github.com/actions/setup-go/issues/756): Remove this step
-      # and the cache input below when upstream stops warning about missing
-      # cache paths for Go versions that predate caching.
-      - name: Configure setup-go
-        id: configure_setup_go
-        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IFS=. read -r major minor _ <<< "${{ matrix.go }}"
-          cache=true
-          if (( major == 1 && minor < 10 )); then
-            cache=false
-          fi
-          echo "cache=$cache" >> "$GITHUB_OUTPUT"
+      - run: go build -o run-tests -- ./.github/run-tests
+      - if: ${{ !matrix.go && !matrix.gccgo }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: latest
+          use-cache: false
+      # TODO(https://github.com/actions/setup-go/issues/756): Remove the cache
+      # input below when upstream stops warning about missing cache paths for
+      # Go versions that predate caching.
       - name: Set up Go
-        id: setup-go
-        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
-        uses: actions/setup-go@v6.4.0
+        if: ${{ matrix.go }}
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
-          cache: ${{ steps.configure_setup_go.outputs.cache }}
+          cache: false
       - name: Set up gccgo
-        if: ${{ startsWith(matrix.go, 'gccgo-') }}
-        shell: bash
+        if: ${{ matrix.gccgo }}
         run: |
           set -euxo pipefail
 
           sudo apt update
-          sudo apt install -y ${{ matrix.go }}
-          echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
-
-          go version
-      - name: Configure environment
-        id: configure_environment
-        shell: bash
+          sudo apt install -y ${{ matrix.versions }}
+      - name: Run tests with golang.org/dl toolchains
+        if: ${{ !matrix.go && !matrix.gccgo }}
         run: |
           set -euxo pipefail
 
-          case ${{ matrix.arch }} in
-            armv6)
-              echo GOARCH=arm >> "$GITHUB_ENV"
-              echo GOARM=6 >> "$GITHUB_ENV"
-              ;;
-            armv7)
-              echo GOARCH=arm >> "$GITHUB_ENV"
-              echo GOARM=7 >> "$GITHUB_ENV"
-              ;;
-            aarch64)
-              echo GOARCH=arm64 >> "$GITHUB_ENV"
-              ;;
-            s390x)
-              echo GOARCH=s390x >> "$GITHUB_ENV"
-              ;;
-            386)
-              echo GOARCH=386 >> "$GITHUB_ENV"
-              ;;
-            x64)
-              echo GOARCH=amd64 >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "Unknown architecture: ${{ matrix.arch }}"
-              exit 1
-              ;;
-          esac
-
-          version_ge() {
-            version=$1
-
-            printf "$version\n%s\n" ${{ matrix.go }} | sort -V | head -n1 | xargs test "$version" =
-          }
-
-          # Race builds are pretty much busted on Go 1.4 and below on systems with newer C
-          # compilers. A number of fixes were backported to go1.4-bootstrap but not any released
-          # version. See https://github.com/golang/go/compare/go1.4.3...release-branch.go1.4.
-          if ! version_ge 1.5; then
-            echo "RACE_BUILDS_BROKEN=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Go binaries built with Go 1.8 and below are incompatible with QEMU user-level emulation.
-          # See https://github.com/golang/go/commit/2673f9e.
-          if version_ge 1.9; then
-            echo "QEMU_EMULATION_WORKS=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          if version_ge 1.12; then
-            # Better inlining in Go 1.12. See https://go.dev/doc/go1.12#compiler.
-            echo "BETTER_INLINING_AVAILABLE=1" >> "$GITHUB_OUTPUT"
-
-            # Race detector support on linux/arm64 was added in go1.12. See
-            # https://go.dev/doc/go1.12.
-            echo "ARM64_RACE_SUPPORTED=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          if version_ge 1.19; then
-            # Race detector support on linux/s390x was added in go1.19. See
-            # https://go.dev/doc/go1.19.
-            echo "S390X_RACE_SUPPORTED=1" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Race detector binaries crash with:
-          #
-          # FATAL: ThreadSanitizer: unsupported VMA range
-          #
-          # See https://github.com/golang/go/issues/29948.
-          echo "ARM64_UNSUPPORTED_VMA_RANGE=1" >> "$GITHUB_OUTPUT"
-
-          # Race detector binaries crash with:
-          #
-          # ==17==ERROR: ThreadSanitizer failed to allocate 0x7f0000 (8323072) bytes at address 9000001a0000 (errno: 12)
-          #
-          # See https://github.com/golang/go/issues/67881.
-          echo "S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE=1" >> "$GITHUB_OUTPUT"
-      - name: Check that Get is inlined
-        if: |
-          !startsWith(matrix.go, 'gccgo-') &&
-          steps.configure_environment.outputs.BETTER_INLINING_AVAILABLE
-        shell: bash
+          ./run-tests run \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            --bootstrap-go "$(command -v go)" \
+            -- \
+            ${{ matrix.versions }}
+      - name: Run tests with setup-go toolchain
+        if: ${{ matrix.go }}
         run: |
           set -euxo pipefail
 
-          go build -gcflags='-m' 2>&1 | grep 'can inline Get$' > /dev/null
-      - name: go build & go test -c
-        shell: bash
+          GOROOT="$(go env GOROOT)"
+          export GOROOT
+          ./run-tests run \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            -- \
+            "${{ matrix.versions }}=$(command -v go)"
+      - name: Run gccgo tests
+        if: ${{ matrix.gccgo }}
         run: |
           set -euxo pipefail
 
-          go build -v ./...
-          go test -c -o goid.test ./...
-      - name: go build & go test -c (race)
-        # Race builds aren't supported on linux/386.
-        #
-        # Race builds aren't supported in gccgo.
-        id: build_goid_race_test
-        if: |
-          !cancelled() &&
-          matrix.arch == 'x64' &&
-          !startsWith(matrix.go, 'gccgo-') &&
-          !steps.configure_environment.outputs.RACE_BUILDS_BROKEN
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          go build -v -race ./...
-          go test -c -race -o goid.race.test ./...
-      - name: go build & go test -c (race)
-        id: build_goid_race_test_cross
-        if: |
-          !cancelled() &&
-          matrix.arch == 'aarch64' &&
-          steps.configure_environment.outputs.ARM64_RACE_SUPPORTED ||
-          matrix.arch == 's390x' &&
-          steps.configure_environment.outputs.S390X_RACE_SUPPORTED
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          # Non-host *.syso files are missing from the Go toolchains provided
-          # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_"$GOARCH".syso \
-            https://github.com/golang/go/raw/refs/tags/go${{ steps.setup-go.outputs.go-version }}/src/runtime/race/race_linux_"$GOARCH".syso
-
-          sudo apt update
-          sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
-
-          export CGO_ENABLED=1
-          export CC=${{ matrix.arch }}-linux-gnu-gcc
-          export CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu
-
-          go build -v -race ./...
-          go test -c -race -o goid.race.test ./...
-      - run: rm goid.race.test
-        if: |
-          !cancelled() &&
-          (steps.build_goid_race_test.outcome == 'success' || steps.build_goid_race_test_cross.outcome == 'success') &&
-          (
-            matrix.arch == 'aarch64' &&
-            steps.configure_environment.outputs.ARM64_RACE_SUPPORTED &&
-            steps.configure_environment.outputs.ARM64_UNSUPPORTED_VMA_RANGE
-          ) || (
-            matrix.arch == 's390x' &&
-            steps.configure_environment.outputs.S390X_RACE_SUPPORTED &&
-            steps.configure_environment.outputs.S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE
-          )
-      - name: Run tests
-        if: |
-          !cancelled() &&
-          (matrix.arch == '386' || matrix.arch == 'x64')
-        shell: bash
-        run: |
-          set -euxo pipefail
-            find . -name '*.test' -type f -executable -print0 | \
-              xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
-      - name: Run tests
-        if: |
-          !cancelled() &&
-          matrix.arch != '386' &&
-          matrix.arch != 'x64' &&
-          steps.configure_environment.outputs.QEMU_EMULATION_WORKS
-        uses: uraimo/run-on-arch-action@v3
+          ./run-tests run \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            -- \
+            gccgo-9=/usr/bin/go-9 \
+            gccgo-10=/usr/bin/go-10 \
+            gccgo-11=/usr/bin/go-11 \
+            gccgo-12=/usr/bin/go-12 \
+            gccgo-13=/usr/bin/go-13 \
+            gccgo-14=/usr/bin/go-14
+      # Reruns retain artifacts, so names include the attempt. Provisioning can
+      # fail before the runner creates a result; the report reconstructs it.
+      - if: ${{ always() && hashFiles('build-status-*.json') != '' }}
+        uses: actions/upload-artifact@v7
         with:
-          arch: ${{ matrix.arch }}
-          distro: bookworm
-          dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
-          shell: /bin/bash
-          run: |
-            set -euxo pipefail
-
-            find /checkout -name '*.test' -type f -executable -print0 | \
-              xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
+          name: build-status-${{ github.run_attempt }}-${{ strategy.job-index }}
+          path: build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json
 
   report:
     name: build status
@@ -300,65 +124,127 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - run: go build -o run-tests -- ./.github/run-tests
+      # Failed build jobs may produce no artifact; the report reconstructs
+      # missing results from their conclusions.
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: build-status-*
+          path: build-status
+          merge-multiple: true
       - uses: actions/github-script@v9
         with:
           script: |
-            const jobs = await github.paginate(
-              github.rest.actions.listJobsForWorkflowRun,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: context.runId,
-                filter: 'latest',
-                per_page: 100,
-              },
-            );
+            const {execFileSync} = require('child_process');
+            const fs = require('fs');
+            const path = require('path');
+
+            function read(file) {
+              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+              if (!value || !Number.isSafeInteger(value.run_attempt) || value.run_attempt <= 0 ||
+                  !value.results ||
+                  typeof value.results !== 'object' || Array.isArray(value.results)) {
+                throw new Error(`Invalid build status ${file}`);
+              }
+              return value;
+            }
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              filter: 'all',
+              per_page: 100,
+            });
+            const latest = new Map();
+            for (const job of jobs) {
+              const match = /^build \(([^)]+)\)$/.exec(job.name);
+              if (!match) continue;
+              const previous = latest.get(job.name);
+              if (!previous || job.run_attempt > previous.job.run_attempt) {
+                latest.set(job.name, {job, versions: match[1].split(' ')});
+              } else if (job.run_attempt === previous.job.run_attempt) {
+                throw new Error(`Duplicate ${job.name} attempt ${job.run_attempt}`);
+              }
+            }
 
             const builds = new Map();
-            const architectureSet = new Set();
-            for (const job of jobs) {
-              const match = /^build \(([^,]+), ([^)]+)\)$/.exec(job.name);
-              if (!match) {
-                continue;
+            const shards = [...latest.values()];
+            const shardsByVersions = new Map();
+            for (const shard of shards) {
+              if (shard.job.conclusion === 'skipped') throw new Error(`Skipped ${shard.job.name}`);
+              shard.key = [...shard.versions].sort().join('\n');
+              for (const version of shard.versions) {
+                if (builds.has(version)) throw new Error(`Duplicate build for ${version}`);
+                builds.set(version, {job: shard.job, shard});
               }
-
-              const [, version, architecture] = match;
-              if (!builds.has(version)) {
-                builds.set(version, new Map());
-              }
-              builds.get(version).set(architecture, job);
-              architectureSet.add(architecture);
+              shardsByVersions.set(shard.key, shard);
             }
-            if (builds.size === 0) {
-              throw new Error('No matrix build jobs found');
-            }
-
-            const architectures = [...architectureSet].sort();
+            if (builds.size === 0) throw new Error('No build jobs found');
             const versions = [...builds.keys()].sort((a, b) => {
-              const aGccgo = a.startsWith('gccgo-');
-              const bGccgo = b.startsWith('gccgo-');
-              if (aGccgo !== bGccgo) {
-                return aGccgo ? 1 : -1;
-              }
-
-              const aParts = a.replace('gccgo-', '').split('.').map(Number);
-              const bParts = b.replace('gccgo-', '').split('.').map(Number);
-              return bParts[0] - aParts[0] || (bParts[1] || 0) - (aParts[1] || 0);
+              const group = Number(a.startsWith('gccgo-')) - Number(b.startsWith('gccgo-'));
+              return group || b.localeCompare(a, undefined, {numeric: true});
             });
+
+            const files = fs.existsSync('build-status') ? fs.readdirSync('build-status') : [];
+            for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+              const value = read(path.join('build-status', name));
+              const key = Object.keys(value.results).sort().join('\n');
+              const shard = shardsByVersions.get(key);
+              if (!shard) throw new Error(`Unexpected build status shard ${name}`);
+              if (value.run_attempt !== shard.job.run_attempt) continue;
+              if (shard.value) throw new Error(`Duplicate build status for ${shard.job.name}`);
+              shard.value = value;
+            }
+
+            const producer = new Set(['pending', 'success', 'failure', 'not_applicable']);
+            let architectures;
+            for (const shard of shards) {
+              let value = shard.value;
+              if (!value) {
+                const output = path.join(process.env.RUNNER_TEMP, `plan-${shard.job.id}.json`);
+                execFileSync('./run-tests', [
+                  'plan', '--attempt', String(shard.job.run_attempt), '--output', output,
+                  '--', ...shard.versions,
+                ], {stdio: 'inherit'});
+                value = read(output);
+              }
+              for (const [version, results] of Object.entries(value.results)) {
+                const build = builds.get(version);
+                if (!results || typeof results !== 'object' || Array.isArray(results)) {
+                  throw new Error(`Invalid results for ${version}`);
+                }
+                const names = Object.keys(results).sort();
+                const statuses = Object.values(results);
+                if (!names.length || names.some(name => !name) ||
+                    !statuses.some(status => status !== 'not_applicable')) {
+                  throw new Error(`No applicable architectures for ${version}`);
+                }
+                if (architectures && names.join() !== architectures.join()) {
+                  throw new Error(`Architecture mismatch for ${version}`);
+                }
+                if (statuses.some(status => !producer.has(status))) throw new Error(`Invalid ${version}`);
+                architectures = names;
+                build.results = results;
+              }
+              shard.allSuccess = shard.versions.every(version =>
+                Object.values(builds.get(version).results)
+                  .filter(status => status !== 'not_applicable')
+                  .every(status => status === 'success'));
+            }
 
             const symbols = {
               action_required: '⚠️',
               cancelled: '⏹️',
               failure: '❌',
-              in_progress: '⏳',
               neutral: '➖',
-              queued: '⏳',
               skipped: '⏭️',
               stale: '➖',
               startup_failure: '❌',
               success: '✅',
               timed_out: '⏱️',
-              waiting: '⏳',
             };
             const summary = [
               '## Build status',
@@ -371,24 +257,37 @@ jobs:
             const readme = summary.slice(4);
 
             for (const version of versions) {
+              const build = builds.get(version);
+              const conclusion = build.job.conclusion || build.job.status;
               const summaryCells = [];
               const readmeCells = [];
               for (const architecture of architectures) {
-                const job = builds.get(version).get(architecture);
-                if (!job) {
+                // Completed cells remain authoritative when a sibling fails.
+                // Pending cells inherit the job conclusion; a later job
+                // failure taints a shard only when every applicable cell succeeded.
+                let status = build.results[architecture];
+                if (status === 'not_applicable') {
                   summaryCells.push('—');
                   readmeCells.push('—');
                   continue;
                 }
-
-                const conclusion = job.conclusion || job.status;
-                const symbol = symbols[conclusion] || '❔';
-                summaryCells.push(`[${symbol}](${job.html_url} "${conclusion}")`);
-                readmeCells.push(
-                  conclusion === 'success'
-                    ? symbol
-                    : `[${symbol}](${job.html_url} "${conclusion}")`,
-                );
+                if (status === 'pending') {
+                  if (conclusion === 'success') {
+                    throw new Error(`Pending ${version}/${architecture}`);
+                  }
+                  status = conclusion;
+                } else if (conclusion === 'success' && status === 'failure') {
+                  throw new Error(`Successful job reported failure for ${version}/${architecture}`);
+                } else if (build.shard.allSuccess && conclusion !== 'success') {
+                  status = conclusion;
+                }
+                const symbol = symbols[status];
+                if (!symbol) {
+                  throw new Error(`Cannot render ${status}`);
+                }
+                const link = `[${symbol}](${build.job.html_url} "${status}")`;
+                summaryCells.push(link);
+                readmeCells.push(status === 'success' ? symbol : link);
               }
               summary.push(`| ${version} | ${summaryCells.join(' | ')} |`);
               readme.push(`| ${version} | ${readmeCells.join(' | ')} |`);
