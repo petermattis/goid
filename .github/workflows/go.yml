@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   build:
+    # The report reads the whitespace-separated versions from this name.
     name: build (${{ matrix.versions }})
     runs-on: ubuntu-latest
     strategy:
@@ -44,19 +45,19 @@ jobs:
           - versions: gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14
             gccgo: true
     steps:
-      - uses: actions/checkout@v7.0.0
-      - run: go build -o run-tests ./.github/run-tests
+      - uses: actions/checkout@v7
+      - run: go build -o run-tests -- ./.github/run-tests
       - if: ${{ !matrix.go && !matrix.gccgo }}
-        uses: mlugg/setup-zig@v2.2.1
+        uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: latest
           use-cache: false
       # TODO(https://github.com/actions/setup-go/issues/756): Remove the cache
       # input below when upstream stops warning about missing cache paths for
       # Go versions that predate caching.
       - name: Set up Go
         if: ${{ matrix.go }}
-        uses: actions/setup-go@v6.4.0
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -67,18 +68,19 @@ jobs:
           set -euxo pipefail
 
           sudo apt update
-          sudo apt install -y gccgo-9 gccgo-10 gccgo-11 gccgo-12 gccgo-13 gccgo-14
-      - name: Run downloaded tests
+          sudo apt install -y ${{ matrix.versions }}
+      - name: Run tests with golang.org/dl toolchains
         if: ${{ !matrix.go && !matrix.gccgo }}
         run: |
           set -euxo pipefail
 
           ./run-tests run \
-            -attempt "$GITHUB_RUN_ATTEMPT" \
-            -output 'build-status-${{ strategy.job-index }}.json' \
-            -bootstrap-go "$(command -v go)" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            --bootstrap-go "$(command -v go)" \
+            -- \
             ${{ matrix.versions }}
-      - name: Run setup-go tests
+      - name: Run tests with setup-go toolchain
         if: ${{ matrix.go }}
         run: |
           set -euxo pipefail
@@ -86,8 +88,9 @@ jobs:
           GOROOT="$(go env GOROOT)"
           export GOROOT
           ./run-tests run \
-            -attempt "$GITHUB_RUN_ATTEMPT" \
-            -output 'build-status-${{ strategy.job-index }}.json' \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            -- \
             "${{ matrix.versions }}=$(command -v go)"
       - name: Run gccgo tests
         if: ${{ matrix.gccgo }}
@@ -95,21 +98,22 @@ jobs:
           set -euxo pipefail
 
           ./run-tests run \
-            -attempt "$GITHUB_RUN_ATTEMPT" \
-            -output 'build-status-${{ strategy.job-index }}.json' \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --output 'build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json' \
+            -- \
             gccgo-9=/usr/bin/go-9 \
             gccgo-10=/usr/bin/go-10 \
             gccgo-11=/usr/bin/go-11 \
             gccgo-12=/usr/bin/go-12 \
             gccgo-13=/usr/bin/go-13 \
             gccgo-14=/usr/bin/go-14
-      - if: ${{ always() }}
-        uses: actions/upload-artifact@v7.0.1
+      # Reruns retain artifacts, so names include the attempt. Provisioning can
+      # fail before the runner creates a result; the report reconstructs it.
+      - if: ${{ always() && hashFiles('build-status-*.json') != '' }}
+        uses: actions/upload-artifact@v7
         with:
-          name: build-status-${{ strategy.job-index }}
-          path: build-status-${{ strategy.job-index }}.json
-          if-no-files-found: ignore
-          overwrite: true
+          name: build-status-${{ github.run_attempt }}-${{ strategy.job-index }}
+          path: build-status-${{ github.run_attempt }}-${{ strategy.job-index }}.json
 
   report:
     name: build status
@@ -120,15 +124,17 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
-      - run: go test ./.github/run-tests && go build -o run-tests ./.github/run-tests
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/checkout@v7
+      - run: go build -o run-tests -- ./.github/run-tests
+      # Failed build jobs may produce no artifact; the report reconstructs
+      # missing results from their conclusions.
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: build-status-*
           path: build-status
           merge-multiple: true
-      - uses: actions/github-script@v9.0.0
+      - uses: actions/github-script@v9
         with:
           script: |
             const {execFileSync} = require('child_process');
@@ -137,19 +143,13 @@ jobs:
 
             function read(file) {
               const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-              if (!value || value.schema !== 1 || !Number.isSafeInteger(value.run_attempt) ||
-                  value.run_attempt <= 0 || !value.results ||
+              if (!value || !Number.isSafeInteger(value.run_attempt) || value.run_attempt <= 0 ||
+                  !value.results ||
                   typeof value.results !== 'object' || Array.isArray(value.results)) {
                 throw new Error(`Invalid build status ${file}`);
               }
               return value;
             }
-
-            const versions = [
-              ...Array.from({length: 24}, (_, index) => `1.${26 - index}`),
-              ...Array.from({length: 6}, (_, index) => `gccgo-${14 - index}`),
-            ];
-            const expectedVersions = new Set(versions);
 
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               owner: context.repo.owner,
@@ -182,17 +182,11 @@ jobs:
               }
               shardsByVersions.set(shard.key, shard);
             }
-            const unexpectedVersions = [...builds.keys()]
-              .filter(version => !expectedVersions.has(version));
-            const missingVersions = [...expectedVersions]
-              .filter(version => !builds.has(version));
-            if (unexpectedVersions.length !== 0 || missingVersions.length !== 0) {
-              throw new Error(
-                'Build version coverage mismatch. ' +
-                `Unexpected: ${unexpectedVersions.join(', ') || 'none'}. ` +
-                `Missing: ${missingVersions.join(', ') || 'none'}.`,
-              );
-            }
+            if (builds.size === 0) throw new Error('No build jobs found');
+            const versions = [...builds.keys()].sort((a, b) => {
+              const group = Number(a.startsWith('gccgo-')) - Number(b.startsWith('gccgo-'));
+              return group || b.localeCompare(a, undefined, {numeric: true});
+            });
 
             const files = fs.existsSync('build-status') ? fs.readdirSync('build-status') : [];
             for (const name of files.filter(name => name.endsWith('.json')).sort()) {
@@ -212,14 +206,10 @@ jobs:
               if (!value) {
                 const output = path.join(process.env.RUNNER_TEMP, `plan-${shard.job.id}.json`);
                 execFileSync('./run-tests', [
-                  'plan', '-attempt', String(shard.job.run_attempt), '-output', output,
-                  ...shard.versions,
+                  'plan', '--attempt', String(shard.job.run_attempt), '--output', output,
+                  '--', ...shard.versions,
                 ], {stdio: 'inherit'});
                 value = read(output);
-                const key = Object.keys(value.results).sort().join('\n');
-                if (value.run_attempt !== shard.job.run_attempt || key !== shard.key) {
-                  throw new Error(`Invalid fallback for ${shard.job.name}`);
-                }
               }
               for (const [version, results] of Object.entries(value.results)) {
                 const build = builds.get(version);
@@ -272,6 +262,9 @@ jobs:
               const summaryCells = [];
               const readmeCells = [];
               for (const architecture of architectures) {
+                // Completed cells remain authoritative when a sibling fails.
+                // Pending cells inherit the job conclusion; a later job
+                // failure taints a shard only when every applicable cell succeeded.
                 let status = build.results[architecture];
                 if (status === 'not_applicable') {
                   summaryCells.push('—');

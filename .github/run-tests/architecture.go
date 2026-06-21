@@ -18,8 +18,10 @@ type binary struct {
 }
 
 var (
-	inlineGet  = regexp.MustCompile(`(?m)can inline Get$`)
+	inlineGet = regexp.MustCompile(`(?m)can inline Get$`)
+	// Race binaries crash under QEMU: https://github.com/golang/go/issues/29948.
 	arm64Crash = regexp.MustCompile(`^FATAL: ThreadSanitizer: unsupported VMA range\nFATAL: Found 47 - Supported 48$`)
+	// TSan can fail to map metadata under QEMU: https://github.com/golang/go/issues/67881.
 	s390xCrash = regexp.MustCompile(`^==[0-9]+==ERROR: ThreadSanitizer failed to allocate 0x[0-9a-f]+ \([0-9]+\) bytes at address [0-9a-f]+ \(errno: 12\)$`)
 )
 
@@ -31,11 +33,15 @@ func runArchitecture(toolchain toolchain, target architecture, work string, qemu
 	environment := targetEnvironment(toolchain.goroot, work, target, false)
 	var failures []error
 	if !toolchain.version.gccgo && toolchain.version.minor >= 12 {
+		// Go 1.12 introduced the inliner that should inline Get. See
+		// https://go.dev/doc/go1.12#compiler.
 		addFailure(&failures, checkInlining(toolchain.command, environment))
 	}
 	normal := filepath.Join(directory, "goid.test")
 	arguments := []string{"test", "-c", "-o", normal, "./..."}
 	if !toolchain.version.gccgo && toolchain.version.minor == 3 {
+		// The -o flag was added to go test in Go 1.4. Go 1.3 writes the
+		// binary to the current directory instead.
 		checkout, err := os.Getwd()
 		if err != nil {
 			return errors.Join(append(failures, err)...)
@@ -74,6 +80,8 @@ func runArchitecture(toolchain toolchain, target architecture, work string, qemu
 				err = runCommand(nil, "curl", "--fail", "--location", "--output", path, url)
 			}
 			if err == nil {
+				// Zig classifies linker inputs by suffix, so expose the downloaded
+				// .syso object through a hard-linked .o alias.
 				os.Remove(path + ".o")
 				err = os.Link(path, path+".o")
 			}
@@ -101,6 +109,8 @@ func runArchitecture(toolchain toolchain, target architecture, work string, qemu
 			failures = append(failures, raceFailures...)
 		}
 	}
+	// Go 1.8 and older binaries cannot run under QEMU user emulation. See
+	// https://github.com/golang/go/commit/2673f9e.
 	if target.image != "" && toolchain.version.minor < 9 {
 		return errors.Join(failures...)
 	}
@@ -199,6 +209,9 @@ func addFailure(failures *[]error, err error) {
 }
 
 func canMapS390xTSANMeta() (bool, error) {
+	// QEMU linux-user maps fixed guest addresses into the host address space.
+	// Probe TSan's s390x metadata base to distinguish 47-bit hosts. See
+	// https://github.com/golang/go/issues/67881.
 	address64 := uint64(0x900000000000)
 	address, size, fixedNoReplace := uintptr(address64), uintptr(64<<10), uintptr(0x100000)
 	mapped, _, err := syscall.Syscall6(syscall.SYS_MMAP, address, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_PRIVATE|syscall.MAP_ANON|syscall.MAP_NORESERVE|fixedNoReplace, ^uintptr(0), 0)

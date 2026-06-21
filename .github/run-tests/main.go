@@ -19,7 +19,6 @@ const zigPrefix = "zig-cc-"
 const pending = "pending"
 
 type resultFile struct {
-	Schema     int                          `json:"schema"`
 	RunAttempt int                          `json:"run_attempt"`
 	Results    map[string]map[string]string `json:"results"`
 }
@@ -58,8 +57,12 @@ var (
 
 func main() {
 	if target, ok := strings.CutPrefix(filepath.Base(os.Args[0]), zigPrefix); ok {
+		// Go 1.17 and older cannot use "zig cc" as CC. See
+		// https://github.com/golang/go/issues/43078.
 		arguments := []string{"cc", "-target", target}
 		for _, argument := range os.Args[1:] {
+			// Zig classifies linker inputs by suffix; cross-race setup creates
+			// a hard-linked .o alias for each .syso object.
 			if filepath.Ext(argument) == ".syso" {
 				argument += ".o"
 			}
@@ -69,7 +72,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 || (os.Args[1] != "plan" && os.Args[1] != "run") {
-		fatal(fmt.Errorf("usage: run-tests <plan|run> -attempt N -output FILE ARG..."))
+		fatal(fmt.Errorf("usage: run-tests <plan|run> --attempt N --output FILE -- ARG..."))
 	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	attempt := flags.Int("attempt", 0, "workflow run attempt")
@@ -82,7 +85,7 @@ func main() {
 		fatal(err)
 	}
 	if *attempt <= 0 || *output == "" || flags.NArg() == 0 {
-		fatal(fmt.Errorf("usage: run-tests %s -attempt N -output FILE ARG...", os.Args[1]))
+		fatal(fmt.Errorf("usage: run-tests %s --attempt N --output FILE -- ARG...", os.Args[1]))
 	}
 	if os.Args[1] == "plan" {
 		results, err := newPlan(*attempt, flags.Args())
@@ -157,16 +160,16 @@ func parseSpecs(specs []string, bootstrap string) ([]toolchain, error) {
 		toolchains = append(toolchains, toolchain{label: label, command: command, version: parsed, installed: installed})
 	}
 	if !toolchains[0].installed && bootstrap == "" {
-		return nil, fmt.Errorf("-bootstrap-go is required for downloaded toolchains")
+		return nil, fmt.Errorf("--bootstrap-go is required for downloaded toolchains")
 	}
 	if toolchains[0].installed && bootstrap != "" {
-		return nil, fmt.Errorf("-bootstrap-go requires downloaded toolchains")
+		return nil, fmt.Errorf("--bootstrap-go requires downloaded toolchains")
 	}
 	return toolchains, nil
 }
 
 func newPlan(attempt int, arguments []string) (resultFile, error) {
-	results := resultFile{Schema: 1, RunAttempt: attempt, Results: make(map[string]map[string]string, len(arguments))}
+	results := resultFile{RunAttempt: attempt, Results: make(map[string]map[string]string, len(arguments))}
 	for _, argument := range arguments {
 		label, _, _ := strings.Cut(argument, "=")
 		if _, ok := results.Results[label]; ok {
@@ -213,7 +216,7 @@ func writeResults(path string, results resultFile) error {
 	return nil
 }
 
-func selectWrapper(directory, label string) (string, error) {
+func latestReleaseWrapper(directory, label string) (string, error) {
 	prefix := "go" + label + "."
 	matches, err := filepath.Glob(filepath.Join(directory, prefix+"*"))
 	if err != nil {
@@ -242,10 +245,6 @@ func run(toolchains []toolchain, bootstrap, output string, results *resultFile) 
 
 	var failures []error
 	if !toolchains[0].installed {
-		labels := make([]string, len(toolchains))
-		for index := range toolchains {
-			labels[index] = toolchains[index].label
-		}
 		var module struct{ Version, Dir string }
 		value, err := commandOutput(environment(), bootstrap, "mod", "download", "-json", "golang.org/dl@latest")
 		if err == nil {
@@ -257,27 +256,22 @@ func run(toolchains []toolchain, bootstrap, output string, results *resultFile) 
 		if err != nil {
 			return err
 		}
-		selected := make(map[string]string, len(labels))
-		for _, label := range labels {
-			selected[label], err = selectWrapper(module.Dir, label)
-			if err != nil {
-				failures = append(failures, err)
-			}
-		}
 		bin := filepath.Join(work, "bin")
 		if err := os.Mkdir(bin, 0o755); err != nil {
-			return errors.Join(errors.Join(failures...), fmt.Errorf("create wrapper directory: %s", err))
+			return fmt.Errorf("create wrapper directory: %s", err)
 		}
 		arguments := []string{"install"}
 		var downloads []int
 		for index := range toolchains {
-			exact := selected[toolchains[index].label]
-			if exact != "" {
-				toolchains[index].command = filepath.Join(bin, exact)
-				toolchains[index].release = strings.TrimPrefix(exact, "go")
-				arguments = append(arguments, "golang.org/dl/"+exact+"@"+module.Version)
-				downloads = append(downloads, index)
+			exact, err := latestReleaseWrapper(module.Dir, toolchains[index].label)
+			if err != nil {
+				failures = append(failures, err)
+				continue
 			}
+			toolchains[index].command = filepath.Join(bin, exact)
+			toolchains[index].release = strings.TrimPrefix(exact, "go")
+			arguments = append(arguments, "golang.org/dl/"+exact+"@"+module.Version)
+			downloads = append(downloads, index)
 		}
 		downloadErrors := make([]error, len(toolchains))
 		if len(downloads) != 0 {
