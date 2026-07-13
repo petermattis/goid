@@ -225,32 +225,45 @@ jobs:
 
           go build -v -race ./...
           go test -c -race -o goid.race.test ./...
+      - name: Set up Zig
+        id: setup_zig
+        if: |
+          !cancelled() &&
+          (
+            matrix.arch == 'aarch64' &&
+            steps.configure_environment.outputs.ARM64_RACE_SUPPORTED ||
+            matrix.arch == 's390x' &&
+            steps.configure_environment.outputs.S390X_RACE_SUPPORTED
+          )
+        uses: mlugg/setup-zig@v2
+        with:
+          version: latest
+          use-cache: false
       - name: go build & go test -c (race)
         id: build_goid_race_test_cross
         if: |
           !cancelled() &&
-          matrix.arch == 'aarch64' &&
-          steps.configure_environment.outputs.ARM64_RACE_SUPPORTED ||
-          matrix.arch == 's390x' &&
-          steps.configure_environment.outputs.S390X_RACE_SUPPORTED
+          steps.setup_zig.outcome == 'success'
         shell: bash
         run: |
           set -euxo pipefail
 
           # Non-host *.syso files are missing from the Go toolchains provided
           # by setup-go. See https://github.com/actions/setup-go/issues/181.
-          curl --location --output "$(go env GOROOT)"/src/runtime/race/race_linux_"$GOARCH".syso \
-            https://github.com/golang/go/raw/refs/tags/go${{ steps.setup-go.outputs.go-version }}/src/runtime/race/race_linux_"$GOARCH".syso
-
-          sudo apt update
-          sudo apt install -y gcc-${{ matrix.arch }}-linux-gnu
+          race_syso="$(go env GOROOT)/src/runtime/race/race_linux_${GOARCH}.syso"
+          curl --fail --location --output "$race_syso" -- \
+            "https://github.com/golang/go/raw/refs/tags/go${{ steps.setup-go.outputs.go-version }}/src/runtime/race/race_linux_${GOARCH}.syso"
+          # Zig classifies linker inputs by suffix; zig-cc rewrites the
+          # downloaded .syso path to this hard-linked .o alias.
+          ln -- "$race_syso" "$race_syso.o"
 
           export CGO_ENABLED=1
-          export CC=${{ matrix.arch }}-linux-gnu-gcc
-          export CC_FOR_TARGET=gcc-${{ matrix.arch }}-linux-gnu
+          export ZIG_TARGET=${{ matrix.arch }}-linux-gnu
+          export CC="$GITHUB_WORKSPACE/.github/zig-cc"
 
-          go build -v -race ./...
-          go test -c -race -o goid.race.test ./...
+          # Zig resolves the target runtime, so let it perform the final link.
+          go build -v -race -ldflags='-linkmode=external' -- ./...
+          go test -c -race -ldflags='-linkmode=external' -o goid.race.test -- ./...
       - run: rm goid.race.test
         if: |
           !cancelled() &&

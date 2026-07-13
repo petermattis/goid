@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+# Go 1.17 and older cannot use the multiword "zig cc" value as CC.
+# See https://github.com/golang/go/issues/43078.
+args=()
+for arg; do
+  if [[ $arg == *.syso ]]; then
+    arg+=.o
+  fi
+  args+=("$arg")
+done
+exec zig cc -target "${ZIG_TARGET:?}" "${args[@]}"
