@@ -264,32 +264,30 @@ jobs:
             steps.configure_environment.outputs.S390X_RACE_SUPPORTED &&
             steps.configure_environment.outputs.S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE
           )
-      - name: Run tests
-        if: |
-          !cancelled() &&
-          (matrix.arch == '386' || matrix.arch == 'x64')
-        shell: bash
-        run: |
-          set -euxo pipefail
-            find . -name '*.test' -type f -executable -print0 | \
-              xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
-      - name: Run tests
+      # The test binaries are static, so binfmt can run them directly on the
+      # host. setup-qemu also caches the binfmt image for Docker Hub outages.
+      - name: Set up QEMU
+        id: setup_qemu
         if: |
           !cancelled() &&
           matrix.arch != '386' &&
           matrix.arch != 'x64' &&
           steps.configure_environment.outputs.QEMU_EMULATION_WORKS
-        uses: uraimo/run-on-arch-action@v3
-        with:
-          arch: ${{ matrix.arch }}
-          distro: bookworm
-          dockerRunArgs: --mount type=bind,source="$(pwd)",target=/checkout,readonly
-          shell: /bin/bash
-          run: |
-            set -euxo pipefail
+        uses: docker/setup-qemu-action@v4
+      - name: Run tests
+        if: |
+          !cancelled() &&
+          (
+            matrix.arch == '386' ||
+            matrix.arch == 'x64' ||
+            steps.setup_qemu.outcome == 'success'
+          )
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            find /checkout -name '*.test' -type f -executable -print0 | \
-              xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
+          find . -name '*.test' -type f -executable -print0 | \
+            xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
 
   report:
     name: build status
