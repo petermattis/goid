@@ -10,7 +10,7 @@ branch.
 <!-- build-status:start -->
 | Go | 386 | aarch64 | armv6 | armv7 | s390x | x64 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1.26 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 1.26 | ✅ | ✅ | ✅ | ✅ | [❌](https://github.com/petermattis/goid/actions/runs/35204318664/job/105146288025 "failure") | ✅ |
 | 1.25 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 1.24 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 1.23 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
