@@ -39,8 +39,8 @@ branch.
 | gccgo-13 | — | — | — | — | — | ✅ |
 | gccgo-12 | — | — | — | — | — | ✅ |
 | gccgo-11 | — | — | — | — | — | ✅ |
-| gccgo-10 | — | — | — | — | — | ✅ |
-| gccgo-9 | — | — | — | — | — | ✅ |
+| gccgo-10 | — | — | — | — | — | [❌](https://github.com/petermattis/goid/actions/runs/41042924033/job/124019884378 "failure") |
+| gccgo-9 | — | — | — | — | — | [❌](https://github.com/petermattis/goid/actions/runs/41042924033/job/124019884443 "failure") |
 
 ✅ success · ❌ failure · ⏹️ cancelled · ⏭️ skipped · — not in matrix
 <!-- build-status:end -->
