@@ -35,12 +35,14 @@ branch.
 | 1.5 | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | 1.4 | — | — | — | — | — | ✅ |
 | 1.3 | — | — | — | — | — | ✅ |
+| gccgo-16 | — | — | — | — | — | ✅ |
+| gccgo-15 | — | — | — | — | — | ✅ |
 | gccgo-14 | — | — | — | — | — | ✅ |
 | gccgo-13 | — | — | — | — | — | ✅ |
 | gccgo-12 | — | — | — | — | — | ✅ |
 | gccgo-11 | — | — | — | — | — | ✅ |
-| gccgo-10 | — | — | — | — | — | [❌](https://github.com/petermattis/goid/actions/runs/41191917700/job/124510268046 "failure") |
-| gccgo-9 | — | — | — | — | — | [❌](https://github.com/petermattis/goid/actions/runs/41191917700/job/124510268022 "failure") |
+| gccgo-10 | — | — | — | — | — | ✅ |
+| gccgo-9 | — | — | — | — | — | ✅ |
 
 ✅ success · ❌ failure · ⏹️ cancelled · ⏭️ skipped · — not in matrix
 <!-- build-status:end -->
