@@ -13,45 +13,17 @@ on:
 jobs:
   build:
     name: build (${{ matrix.go }}, ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           # Cross-compilation became possible in go1.5 with the removal of C
           # code from the compiler. See https://go.dev/doc/go1.5#c.
-          #
-          # gccgo cross-compilation requires a target-specific GCC toolchain
-          # rather than GOARCH, so only native x64 builds are included here.
           - arch: x64
             go: '1.3'
           - arch: x64
             go: '1.4'
-          # gccgo is installed from the runner's Ubuntu archive.
-          - arch: x64
-            go: gccgo-9
-            runner: ubuntu-24.04
-          - arch: x64
-            go: gccgo-10
-            runner: ubuntu-24.04
-          - arch: x64
-            go: gccgo-11
-            runner: ubuntu-26.04
-          - arch: x64
-            go: gccgo-12
-            runner: ubuntu-26.04
-          - arch: x64
-            go: gccgo-13
-            runner: ubuntu-26.04
-          - arch: x64
-            go: gccgo-14
-            runner: ubuntu-26.04
-          - arch: x64
-            go: gccgo-15
-            runner: ubuntu-26.04
-          - arch: x64
-            go: gccgo-16
-            runner: ubuntu-26.04
         arch:
           - armv6
           - armv7
@@ -97,7 +69,6 @@ jobs:
       # cache paths for Go versions that predate caching.
       - name: Configure setup-go
         id: configure_setup_go
-        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -110,23 +81,11 @@ jobs:
           echo "cache=$cache" >> "$GITHUB_OUTPUT"
       - name: Set up Go
         id: setup-go
-        if: ${{ !startsWith(matrix.go, 'gccgo-') }}
         uses: actions/setup-go@v7.0.0
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
           cache: ${{ steps.configure_setup_go.outputs.cache }}
-      - name: Set up gccgo
-        if: ${{ startsWith(matrix.go, 'gccgo-') }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          sudo apt update
-          sudo apt install -y ${{ matrix.go }}
-          echo ${{ matrix.go }} | sed 's/^gcc//' | xargs -I % ln -s /usr/bin/% /usr/local/bin/go
-
-          go version
       - name: Configure environment
         id: configure_environment
         shell: bash
@@ -208,9 +167,7 @@ jobs:
           # See https://github.com/golang/go/issues/67881.
           echo "S390X_THREAD_SANITIZER_FAILED_TO_ALLOCATE=1" >> "$GITHUB_OUTPUT"
       - name: Check that Get is inlined
-        if: |
-          !startsWith(matrix.go, 'gccgo-') &&
-          steps.configure_environment.outputs.BETTER_INLINING_AVAILABLE
+        if: steps.configure_environment.outputs.BETTER_INLINING_AVAILABLE
         shell: bash
         run: |
           set -euxo pipefail
@@ -225,13 +182,10 @@ jobs:
           go test -c -o goid.test ./...
       - name: go build & go test -c (race)
         # Race builds aren't supported on linux/386.
-        #
-        # Race builds aren't supported in gccgo.
         id: build_goid_race_test
         if: |
           !cancelled() &&
           matrix.arch == 'x64' &&
-          !startsWith(matrix.go, 'gccgo-') &&
           !steps.configure_environment.outputs.RACE_BUILDS_BROKEN
         shell: bash
         run: |
@@ -316,10 +270,52 @@ jobs:
           find . -name '*.test' -type f -executable -print0 | \
             xargs -t -0 -I '{}' sh -c '{} -test.v && {} -test.bench=. -test.benchmem -test.v'
 
+  gccgo:
+    name: build (gccgo-${{ matrix.gcc }}, ${{ matrix.target.arch }})
+    runs-on: ${{ matrix.gcc < 11 && 'ubuntu-24.04' || 'ubuntu-26.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: [9, 10, 11, 12, 13, 14, 15, 16]
+        target:
+          - { arch: x64, goarch: amd64 }
+          - { arch: '386', goarch: '386', triple: i686-linux-gnu, qemu: i386 }
+          # Ubuntu's 32-bit ARM libgo requires ARMv7.
+          - { arch: armv7, goarch: arm, triple: arm-linux-gnueabihf, qemu: arm }
+          - { arch: aarch64, goarch: arm64, triple: aarch64-linux-gnu, qemu: aarch64 }
+          - { arch: s390x, goarch: s390x, triple: s390x-linux-gnu, qemu: s390x }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and test with gccgo
+        shell: bash
+        env:
+          GCC_VERSION: ${{ matrix.gcc }}
+          GOARCH: ${{ matrix.target.goarch }}
+          TARGET: ${{ matrix.target.triple }}
+          QEMU: ${{ matrix.target.qemu }}
+        run: |
+          set -euxo pipefail
+
+          packages=("gccgo-$GCC_VERSION")
+          test_flags=()
+          if [[ -n "$TARGET" ]]; then
+            export GCCGO="$TARGET-gccgo-$GCC_VERSION"
+            export AR="$TARGET-ar"
+            packages+=("gccgo-$GCC_VERSION-$TARGET" qemu-user)
+            # gccgo links libgo and libc dynamically. Use the target loader and libraries.
+            test_flags+=(-exec "qemu-$QEMU -L /usr/$TARGET")
+          fi
+          sudo apt-get update
+          sudo apt-get install -y "${packages[@]}"
+
+          "go-$GCC_VERSION" version
+          "go-$GCC_VERSION" build -v ./...
+          "go-$GCC_VERSION" test "${test_flags[@]}" -v -bench=. -benchmem ./...
+
   report:
     name: build status
     if: ${{ always() }}
-    needs: build
+    needs: [build, gccgo]
     permissions:
       actions: read
       contents: write
